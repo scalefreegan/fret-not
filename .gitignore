@@ -1,0 +1,12 @@
+# Runtime state
+data/
+
+node_modules/
+web/dist/
+.env
+.env.*
+*.local
+.DS_Store
+
+# browser-automation debug artifacts
+.playwright-mcp/
