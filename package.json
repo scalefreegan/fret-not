@@ -1,0 +1,14 @@
+{
+  "name": "fret-not",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Fret Not — a visual app for learning how music works, on piano and guitar",
+  "scripts": {
+    "dev": "npm --prefix web run dev",
+    "test": "node --test --test-timeout=60000 \"web/shared/**/*.test.ts\" \"web/server/**/*.test.ts\" \"scripts/tests/*.test.mjs\"",
+    "check:content": "node scripts/check-content.ts",
+    "lint": "npm --prefix web run lint",
+    "typecheck": "cd web && npx tsc -b"
+  }
+}

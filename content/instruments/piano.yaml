@@ -1,0 +1,5 @@
+title: Piano
+layout: keyboard
+range: [A0, C8]
+writtenOffset: 0
+timbre: piano

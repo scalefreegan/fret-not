@@ -1,0 +1,101 @@
+import type { FretPos } from "./music/instruments.ts";
+
+// What an exercise question looks like once generated. The generator
+// (exercises.ts) turns an ExerciseDecl into Questions; the UI
+// (src/exercises/) renders a Question from these parts and hands back a
+// Given; grade() compares it with `expected`. Nothing here knows about React
+// or audio, so generation and grading are tested with `node --test`.
+
+export type Timbre = "sine" | "triangle" | "square" | "saw" | "piano" | "guitar";
+
+/** One or more notes sounding together, placed in time. */
+export interface SoundEvent {
+  /** MIDI notes; empty for a silent event (a rest). */
+  midis: number[];
+  /** Start, in quarter-note beats from the beginning of the Sound. */
+  at: number;
+  /** Length in quarter-note beats. */
+  beats: number;
+  timbre?: Timbre;
+  /** For guitar chords: seconds between successive strings. */
+  strum?: number;
+}
+/** Something the learner can press Play on. */
+export interface Sound {
+  events: SoundEvent[];
+  /** Quarter-note beats per minute. */
+  tempo: number;
+  timbre?: Timbre;
+}
+
+/** Something shown (or played) as part of the question. */
+export type Stimulus =
+  | { type: "staff"; clef: "treble" | "bass"; notes: string[]; chord?: boolean; key?: string }
+  | { type: "keyboard"; range: [number, number]; marked: number[] }
+  | { type: "fretboard"; maxFret: number; marked: FretPos[] }
+  | { type: "tab"; positions: FretPos[] }
+  | { type: "diagram"; chord: string }
+  | { type: "rhythm"; pattern: string; time: string }
+  | { type: "sound"; sound: Sound; autoplay: boolean }
+  /** Large text: a chord symbol, a note name, "220 Hz". */
+  | { type: "text"; text: string };
+
+export interface Choice {
+  id: string;
+  label: string;
+  /** Shown instead of (or above) the label, e.g. three rhythms to pick from. */
+  stimulus?: Stimulus;
+}
+
+/** How the learner answers. */
+export type ResponseSpec =
+  | { type: "choice"; choices: Choice[] }
+  /** Play on the virtual keyboard. `single` submits on the first key;
+   *  `sequence` collects keys in order until `length` are played; `set`
+   *  toggles keys on and off until the learner presses Check. */
+  | { type: "keyboard"; range: [number, number]; mode: "single" | "sequence" | "set"; length?: number; labels?: "none" | "c" | "naturals" | "all"; marked?: number[] }
+  /** The same on the virtual fretboard. */
+  | { type: "fretboard"; maxFret: number; mode: "single" | "sequence" | "set"; length?: number; labels?: "none" | "open" | "naturals" | "all"; marked?: FretPos[] }
+  /** Tap the space bar in time after a count-in. */
+  | { type: "tap"; pattern: string; time: string; tempo: number; countInBeats: number };
+
+export type Expected =
+  | { type: "choice"; id: string }
+  /** `match: "exact"` compares MIDI numbers, `"pc"` ignores the octave.
+   *  `ordered` compares as a sequence, otherwise as a set. */
+  | { type: "notes"; midis: number[]; match: "exact" | "pc"; ordered: boolean }
+  /** Guitar: the fretted positions must spell this chord (any voicing). */
+  | { type: "chord-shape"; symbol: string }
+  /** Onset times in quarter-note beats from the first beat after the
+   *  count-in; each tap must fall within `toleranceBeats` of its onset. */
+  | { type: "taps"; onsets: number[]; toleranceBeats: number };
+
+export type Given =
+  | { type: "choice"; id: string }
+  | { type: "notes"; midis: number[]; positions?: FretPos[] }
+  | { type: "taps"; onsets: number[] };
+
+export interface Question {
+  /** Unique within one generated batch. */
+  id: string;
+  kind: string;
+  concept: string;
+  /** The instruction, one sentence: "Name this note." */
+  prompt: string;
+  stimuli: Stimulus[];
+  response: ResponseSpec;
+  expected: Expected;
+  /** One or two sentences shown after answering, right or wrong: the answer
+   *  and why. Written so it teaches ("That is G: the second line of the
+   *  treble clef."). */
+  explain: string;
+  /** Played after answering, e.g. the correct notes. */
+  reveal?: Sound;
+}
+
+export interface Grade {
+  correct: boolean;
+  /** For taps: per-onset error in beats (null = missed), so the UI can show
+   *  early/late. */
+  tapErrors?: (number | null)[];
+}
