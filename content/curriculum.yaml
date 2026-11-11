@@ -1,0 +1,126 @@
+# The map of the whole curriculum: tracks, levels and the concepts mastery is
+# tracked on. Lessons live in content/lessons/<track>/ and name the concepts
+# they teach. Format: docs/CONTENT.md.
+
+tracks:
+  - id: core
+    title: How music works
+    summary: Sound, notes, rhythm, reading, scales, chords and harmony, independent of any one instrument.
+  - id: piano
+    title: Piano
+    instrument: piano
+    summary: The same ideas found, shaped and played on the keyboard.
+  - id: guitar
+    title: Guitar
+    instrument: guitar
+    summary: The same ideas found, shaped and played on the fretboard.
+
+levels:
+  - id: 0
+    title: Sound
+    summary: What a musical note physically is, and how a piano and a guitar make one.
+  - id: 1
+    title: Notes and layout
+    summary: The twelve notes, their names, and where they live on the keyboard and the fretboard.
+  - id: 2
+    title: Rhythm and reading
+    summary: How music is organised in time, and how to read it from the staff and from tab.
+  - id: 3
+    title: Intervals, scales and first chords
+    summary: The distances between notes, the scales built from them, and the first chords on both instruments.
+  - id: 4
+    title: Keys and harmony
+    status: outline
+    summary: How chords belong to a key and lead to one another.
+    topics:
+      - The seven chords of a key and their Roman numerals
+      - The circle of fifths as a map of keys and chords
+      - Inversions and smooth voice leading
+      - Cadences, and why V wants to go to I
+  - id: 5
+    title: Progressions and forms
+    status: outline
+    summary: The chord patterns most songs are made of.
+    topics:
+      - I–IV–V and I–V–vi–IV
+      - The 12-bar blues and the blues scale
+      - Barre chords and power chords
+      - Verse, chorus, bridge and other song sections
+  - id: 6
+    title: Colour
+    status: outline
+    summary: Richer chords and scales.
+    topics:
+      - Seventh chords
+      - ii–V–I
+      - Swing rhythm
+      - The modes
+      - Extensions (ninths, elevenths, thirteenths)
+  - id: 7
+    title: Composition
+    status: outline
+    summary: Writing your own music.
+    topics:
+      - Writing a melody over chords
+      - Harmonising a melody
+      - Bass lines
+      - Form and development
+      - Arranging for piano and guitar
+
+concepts:
+  # ---- Level 0: Sound ------------------------------------------------------
+  - { id: vibration, title: Sound is vibration, level: 0 }
+  - { id: pitch-frequency, title: Pitch is frequency, level: 0, requires: [vibration] }
+  - { id: loudness-amplitude, title: Loudness is amplitude, level: 0, requires: [vibration] }
+  - { id: string-modes, title: How a string vibrates, level: 0, requires: [pitch-frequency] }
+  - { id: overtone-series, title: The overtone series, level: 0, requires: [string-modes] }
+  - { id: timbre, title: Timbre, level: 0, requires: [overtone-series] }
+  - { id: octave, title: The octave, level: 0, requires: [pitch-frequency] }
+  - { id: consonance, title: Why some notes sound good together, level: 0, requires: [overtone-series, octave] }
+  - { id: piano-sound, title: How a piano makes sound, level: 0, track: piano, requires: [string-modes] }
+  - { id: guitar-sound, title: How a guitar makes sound, level: 0, track: guitar, requires: [string-modes] }
+
+  # ---- Level 1: Notes and layout -------------------------------------------
+  - { id: musical-alphabet, title: The seven note names, level: 1, requires: [octave] }
+  - { id: half-whole-steps, title: Half steps and whole steps, level: 1, requires: [musical-alphabet] }
+  - { id: sharps-flats, title: Sharps and flats, level: 1, requires: [half-whole-steps] }
+  - { id: twelve-notes, title: The twelve notes, level: 1, requires: [sharps-flats] }
+  - { id: octave-numbers, title: Octave numbers and middle C, level: 1, requires: [musical-alphabet] }
+  - { id: keyboard-pattern, title: The keyboard pattern, level: 1, track: piano, requires: [musical-alphabet] }
+  - { id: keyboard-naturals, title: The white keys, level: 1, track: piano, requires: [keyboard-pattern] }
+  - { id: keyboard-accidentals, title: The black keys, level: 1, track: piano, requires: [keyboard-naturals, sharps-flats] }
+  - { id: guitar-strings, title: The six open strings, level: 1, track: guitar, requires: [musical-alphabet] }
+  - { id: frets-half-steps, title: Each fret is a half step, level: 1, track: guitar, requires: [guitar-strings, half-whole-steps] }
+  - { id: fretboard-low-strings, title: Notes on the low E and A strings, level: 1, track: guitar, requires: [frets-half-steps] }
+  - { id: fretboard-unisons, title: The same note in several places, level: 1, track: guitar, requires: [frets-half-steps] }
+
+  # ---- Level 2: Rhythm and reading -----------------------------------------
+  - { id: pulse-tempo, title: Pulse and tempo, level: 2 }
+  - { id: note-values, title: Note values, level: 2, requires: [pulse-tempo] }
+  - { id: rests, title: Rests, level: 2, requires: [note-values] }
+  - { id: time-signatures, title: Bars and time signatures, level: 2, requires: [note-values] }
+  - { id: counting, title: Counting eighths and dotted notes, level: 2, requires: [time-signatures] }
+  - { id: staff-basics, title: The staff and its clefs, level: 2, requires: [musical-alphabet] }
+  - { id: treble-clef-notes, title: Reading the treble clef, level: 2, requires: [staff-basics] }
+  - { id: bass-clef-notes, title: Reading the bass clef, level: 2, requires: [staff-basics] }
+  - { id: ledger-lines, title: Ledger lines and the grand staff, level: 2, requires: [treble-clef-notes, bass-clef-notes] }
+  - { id: accidentals-on-staff, title: Sharps and flats on the staff, level: 2, requires: [treble-clef-notes, sharps-flats] }
+  - { id: reading-on-keyboard, title: From the staff to the keys, level: 2, track: piano, requires: [treble-clef-notes, keyboard-naturals] }
+  - { id: tablature, title: Reading tablature, level: 2, track: guitar, requires: [guitar-strings, note-values] }
+  - { id: guitar-staff, title: The guitar on the staff, level: 2, track: guitar, requires: [treble-clef-notes, tablature] }
+
+  # ---- Level 3: Intervals, scales and first chords -------------------------
+  - { id: interval-numbers, title: Counting intervals, level: 3, requires: [half-whole-steps, treble-clef-notes] }
+  - { id: interval-qualities, title: Major, minor and perfect intervals, level: 3, requires: [interval-numbers] }
+  - { id: interval-sound, title: Hearing intervals, level: 3, requires: [interval-qualities, consonance] }
+  - { id: major-scale, title: The major scale, level: 3, requires: [half-whole-steps] }
+  - { id: key-signatures, title: Keys and key signatures, level: 3, requires: [major-scale, accidentals-on-staff] }
+  - { id: minor-scale, title: The natural minor scale, level: 3, requires: [major-scale] }
+  - { id: pentatonic-scales, title: Pentatonic scales, level: 3, requires: [major-scale, minor-scale] }
+  - { id: triads, title: Major and minor triads, level: 3, requires: [interval-qualities] }
+  - { id: chord-symbols, title: Chord symbols, level: 3, requires: [triads] }
+  - { id: piano-scales, title: Major scales on the keyboard, level: 3, track: piano, requires: [major-scale, keyboard-accidentals] }
+  - { id: piano-triads, title: Triads on the keyboard, level: 3, track: piano, requires: [triads, keyboard-accidentals] }
+  - { id: chord-diagrams, title: Reading chord diagrams, level: 3, track: guitar, requires: [guitar-strings] }
+  - { id: guitar-open-chords, title: Open chords, level: 3, track: guitar, requires: [chord-diagrams, triads] }
+  - { id: guitar-pentatonic, title: The pentatonic box, level: 3, track: guitar, requires: [pentatonic-scales, fretboard-low-strings] }
