@@ -42,6 +42,7 @@ exercises:
         explain: Tightening a string raises its frequency and loosening it lowers it.
   - kind: ear-higher-lower
     concept: guitar-sound
+    vocab: plain
     count: 4
     minSemitones: 1
     maxSemitones: 5

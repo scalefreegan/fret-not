@@ -13,7 +13,8 @@ import { startersFor } from "./starters.ts";
  * changed, so the panel asks App to refetch it straight away. */
 
 const inputClass =
-  "w-full rounded-xl border border-line-strong bg-panel px-3 py-1.5 text-sm text-fg placeholder:text-fg-3 focus:border-accent focus:outline-none focus:ring-3 focus:ring-accent-soft disabled:opacity-60";
+  // 16px on a touch screen: iOS zooms the page when a smaller field takes focus.
+  "w-full rounded-xl border border-line-strong bg-panel px-3 py-1.5 text-sm text-fg pointer-coarse:text-base placeholder:text-fg-3 focus:border-accent focus:outline-none focus:ring-3 focus:ring-accent-soft disabled:opacity-60";
 
 /** A deliberately small markdown subset — replies are prose, not documents. */
 function inline(s: string, keyBase: string): ReactNode[] {
@@ -137,24 +138,31 @@ export default function ChatPanel({ context, onContentChanged }: { context: Tuto
           if (parts.length) setNote(parts.join(" · "));
         },
         fixing: () => setFixing(true),
-        problems: (d) => setMessages((m) => [...m, { role: "note", text: d.text, ts: d.ts }]),
+        problems: (d) => {
+          setMessages((m) => [...m, { role: "note", text: d.text, ts: d.ts }]);
+        },
+        note: (d) => setMessages((m) => [...m, { role: "note", text: d.text, ts: d.ts }]),
         commit: (c) => {
           if ("hash" in c) {
             setMessages((m) => [...m, commitLine(c)]);
             // A new or changed lesson must show up on the path at once.
             onContentChanged?.();
           } else if ("error" in c) {
-            setError(`The tutor's changes are on disk but could not be committed: ${c.error}`);
-            onContentChanged?.();
+            setError(`The tutor's change could not be committed to git, so it was discarded: ${c.error}`);
           }
         },
         error: (d) => setError(d.error),
       }, ctrl.signal);
     } catch (e) {
       if (ctrl.signal.aborted) {
-        setNote("Stopped. Anything the tutor had already written is kept and committed.");
-        // The server commits leftovers after the kill; pick them up.
-        window.setTimeout(() => onContentChanged?.(), 1500);
+        // What became of the turn is the server's to say: a turn stopped
+        // part-way is thrown away (it wrote in a copy of its own, and a note
+        // says so), but a Stop that lands after the commit changes nothing.
+        setNote("Stopped. A turn stopped part-way leaves nothing behind: the tutor writes in a separate copy, which is thrown away, and nothing is committed.");
+        window.setTimeout(() => {
+          onContentChanged?.();
+          getChatHistory().then((h) => setMessages(h.messages), () => undefined);
+        }, 1500);
       } else setError(String((e as Error).message || e));
     } finally {
       abort.current = null;
@@ -193,7 +201,7 @@ export default function ChatPanel({ context, onContentChanged }: { context: Tuto
       <div className="flex items-center gap-2 border-b border-line px-4 py-2">
         <label className="flex min-w-0 flex-1 items-center gap-2 text-xs text-fg-3">
           Model
-          <select aria-label="Model" className={`${inputClass} w-auto py-1 text-xs`} value={settings?.model ?? ""} disabled={!settings || thinking} onChange={(e) => void pickModel(e.target.value)}>
+          <select aria-label="Model" className={`${inputClass} w-auto min-w-0 py-1 text-xs pointer-coarse:min-h-11`} value={settings?.model ?? ""} disabled={!settings || thinking} onChange={(e) => void pickModel(e.target.value)}>
             {settings?.models.map((m) => (
               <option key={m.id} value={m.id} title={m.note}>
                 {m.label}
@@ -217,7 +225,7 @@ export default function ChatPanel({ context, onContentChanged }: { context: Tuto
                 <li key={s.label}>
                   <button
                     type="button"
-                    className="rounded-full border border-line bg-raised px-3 py-1.5 text-left text-sm font-medium text-fg-2 hover:border-line-strong hover:text-fg"
+                    className="rounded-full border border-line bg-raised px-3 py-1.5 text-left text-sm font-medium text-fg-2 hover:border-line-strong hover:text-fg active:border-line-strong pointer-coarse:min-h-11 pointer-coarse:px-4"
                     onClick={() => {
                       if (s.send) void submit(s.text);
                       else {
@@ -293,7 +301,8 @@ export default function ChatPanel({ context, onContentChanged }: { context: Tuto
           }}
           onKeyUp={(e) => e.stopPropagation()}
           rows={2}
-          placeholder="Ask a question, or ask for more practice… (Enter to send)"
+          placeholder="Ask a question, or ask for more practice…"
+          enterKeyHint="send"
           className={`${inputClass} max-h-40 resize-none`}
           disabled={thinking}
         />

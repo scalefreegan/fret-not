@@ -16,6 +16,7 @@ exercises:
     accidentals: true
   - kind: build-interval
     concept: twelve-notes
+    vocab: names
     count: 5
     intervals: [m2, M2]
     direction: both

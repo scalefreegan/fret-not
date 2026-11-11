@@ -9,10 +9,22 @@ summary: Music runs on a steady beat. Tempo is how fast that beat goes.
 exercises:
   - kind: tap-rhythm
     concept: pulse-tempo
-    title: Keep the beat
-    count: 3
+    title: Keep a slow beat
+    count: 1
     values: [q]
-    tempo: 72
+    tempo: 60
+  - kind: tap-rhythm
+    concept: pulse-tempo
+    title: Keep a walking beat
+    count: 1
+    values: [q]
+    tempo: 76
+  - kind: tap-rhythm
+    concept: pulse-tempo
+    title: Keep a quicker beat
+    count: 1
+    values: [q]
+    tempo: 100
   - kind: quiz
     concept: pulse-tempo
     count: 3

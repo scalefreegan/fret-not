@@ -75,7 +75,7 @@ One size is left over: **6 half steps**, sitting between the perfect fourth and 
 
 Intervals are abbreviated with a letter and a number: capital **M** for major, small **m** for minor, **P** for perfect. So M3 is a major third, m7 a minor seventh, P5 a perfect fifth.
 
-Here are all the intervals from C in order of size. Click the notes in pairs with the low C to hear each one grow.
+Here are all the intervals from C in order of size. Press the low C and then one of the other notes to hear each interval, from the smallest to the largest.
 
 ```widget
 type: keyboard

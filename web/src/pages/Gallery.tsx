@@ -6,7 +6,7 @@ import { RenderWidget, WIDGET_EXAMPLES } from "../widgets/registry.tsx";
 export function Gallery({ only }: { only?: string }) {
   const types = Object.keys(WIDGETS).filter((t) => !only || t === only);
   return (
-    <div className="mx-auto max-w-4xl px-5 py-8">
+    <div className="mx-auto max-w-4xl px-4 py-8 sm:px-5">
       <h1 className="text-3xl font-bold">Widget gallery</h1>
       {types.map((type) => (
         <section key={type} id={type} className="mt-8">
@@ -16,7 +16,7 @@ export function Gallery({ only }: { only?: string }) {
           <p className="text-sm text-fg-3">{WIDGETS[type].doc}</p>
           {(WIDGET_EXAMPLES[type] ?? [{}]).map((params, i) => (
             <div key={i}>
-              <code className="text-xs text-fg-3">{JSON.stringify(params)}</code>
+              <code className="min-w-0 break-all text-xs text-fg-3">{JSON.stringify(params)}</code>
               <RenderWidget type={type} params={params} />
             </div>
           ))}

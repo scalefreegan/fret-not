@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Plugin } from "vite";
-import { handleChat, handleSettings } from "./chat.ts";
+import { handleChat, handleSettings, recoverInterruptedTurn } from "./chat.ts";
 import { handleContent } from "./content.ts";
 import { handleProgress } from "./progress.ts";
 import { HttpError, sendJson } from "./sse.ts";
@@ -60,12 +60,18 @@ export function apiPlugins(): Plugin {
     name: "fret-not-api",
     apply: "serve",
     configureServer(server) {
+      // A worktree an earlier server process left behind mid-turn (it was
+      // quit, killed or crashed) is cleared away. Never throws, and never
+      // touches the repository's files: a turn does not write there until
+      // it is finished and valid.
+      const swept = recoverInterruptedTurn();
+      if (swept.removed) console.log(`[fret-not] tutor: removed ${swept.removed} leftover work director${swept.removed === 1 ? "y" : "ies"}`);
       // No database and no cache: the curriculum is re-read from content/ on
       // every request, so an edit by the tutor or an editor is live at once.
       server.middlewares.use("/api/content", wrap(handleContent));
       // Learner progress: JSON under data/profiles/<id>/.
       server.middlewares.use("/api/progress", wrap(handleProgress));
-      // The tutor (SSE, auto-commit of content/ after each turn) and its
+      // The tutor (SSE; a valid turn is committed and fast-forwarded in) and its
       // model setting.
       server.middlewares.use("/api/chat", wrap(handleChat));
       server.middlewares.use("/api/settings", wrap(handleSettings));

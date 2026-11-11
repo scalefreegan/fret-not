@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { freqOf, midiOf, pitchLabel, parsePitch } from "../../../shared/music/notes.ts";
-import { startPartials } from "../../audio/index.ts";
+import { startPartials, type PartialsHandle } from "../../audio/index.ts";
 import { Button, Segmented, WidgetFrame } from "../../ui.tsx";
 import { list, str } from "../params.ts";
 import type { WidgetProps } from "../types.ts";
@@ -40,11 +40,20 @@ export function Consonance({ params }: WidgetProps) {
   const f1 = freqOf(midiOf(baseName));
   const ratios = list<string>(params, "ratios", ["2:1", "3:2", "4:3", "5:4", "16:15"]).filter((r) => parseRatio(r));
   const options = ratios.length ? ratios : ["2:1", "3:2"];
-  const [ratio, setRatio] = useState(options[0]);
+  const [ratio, setRatioState] = useState(options[0]);
   const [which, setWhich] = useState<"low" | "high" | "both" | null>(null);
   const held = useHeldSound();
   const [p, q] = parseRatio(ratio) ?? [2, 1];
   const f2 = (f1 * p) / q;
+
+  // The upper tone while it sounds, so that choosing another ratio retunes
+  // it: what is heard always matches the ratio on screen.
+  const upper = useRef<PartialsHandle | null>(null);
+  const setRatio = (next: string) => {
+    setRatioState(next);
+    const r = parseRatio(next);
+    if (r) upper.current?.setFrequency((f1 * r[0]) / r[1]);
+  };
 
   const play = (w: "low" | "high" | "both") => {
     if (held.playing && which === w) {
@@ -53,8 +62,14 @@ export function Consonance({ params }: WidgetProps) {
     }
     setWhich(w);
     held.start(() => {
-      const hs = [w !== "high" ? startPartials(f1, TONE, { level: 0.75 }) : null, w !== "low" ? startPartials(f2, TONE, { level: 0.75 }) : null];
-      return () => hs.forEach((h) => h?.stop());
+      const lo = w !== "high" ? startPartials(f1, TONE, { level: 0.75 }) : null;
+      const hi = w !== "low" ? startPartials(f2, TONE, { level: 0.75 }) : null;
+      upper.current = hi;
+      return () => {
+        lo?.stop();
+        hi?.stop();
+        if (upper.current === hi) upper.current = null;
+      };
     });
   };
   const sounding = held.playing ? which : null;

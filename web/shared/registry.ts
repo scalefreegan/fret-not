@@ -1,9 +1,9 @@
-import { isChordSymbol, isChordType } from "./music/chords.ts";
-import { isFretPos } from "./music/instruments.ts";
-import { isInterval } from "./music/intervals.ts";
-import { isPitch, isPitchClass } from "./music/notes.ts";
+import { CHORDS, chordSymbol, isChordSymbol, isChordType, parseChord, romanToChord } from "./music/chords.ts";
+import { fretMidi, GUITAR_FRETS, GUITAR_SHAPES, isFretPos, positionsOf } from "./music/instruments.ts";
+import { isInterval, parseInterval, semitones } from "./music/intervals.ts";
+import { isPitch, isPitchClass, midiOf, parsePitchClass, pc, pcName, toMidi } from "./music/notes.ts";
 import { isDuration, isTime, parseMelody, parseRhythm, parseTab } from "./music/rhythm.ts";
-import { isKey, isScaleType } from "./music/scales.ts";
+import { isKey, isScaleType, scaleNotes } from "./music/scales.ts";
 
 // The catalogue of widgets a lesson may embed and exercise kinds it may
 // declare, with the parameters each accepts. This file is the single source
@@ -46,6 +46,11 @@ export interface ParamSpec {
   required?: boolean;
   /** Shown in docs/CONTENT.md; keep it to one line. */
   doc: string;
+  /** Bounds for a `number` (or each entry of a `number[]`), inclusive. */
+  min?: number;
+  max?: number;
+  /** The number must be whole. */
+  integer?: boolean;
 }
 export type ParamSpecs = Record<string, ParamSpec>;
 
@@ -61,23 +66,23 @@ export const WIDGETS: Record<string, { doc: string; params: ParamSpecs }> = {
     params: {
       mode: { type: "enum:harmonics|pluck|strike", doc: "Default harmonics." },
       note: { type: "pitch", doc: "The string's fundamental. Default A2." },
-      modes: { type: "number", doc: "How many harmonics are offered. Default 6." },
+      modes: { type: "number", min: 1, max: 16, integer: true, doc: "How many harmonics are offered. Default 6." },
     },
   },
   "harmonic-mixer": {
     doc: "One slider per harmonic of a note, with the summed waveform and the spectrum drawn live. The learner builds a timbre by ear and eye.",
     params: {
       note: { type: "pitch", doc: "Fundamental. Default A2." },
-      partials: { type: "number", doc: "Number of sliders. Default 8." },
+      partials: { type: "number", min: 1, max: 16, integer: true, doc: "Number of sliders. Default 8." },
       preset: { type: "enum:sine|saw|square|triangle|piano|guitar", doc: "Starting mix. Default sine." },
     },
   },
   "frequency-explorer": {
     doc: "A frequency slider with a live waveform: drag to hear pitch rise as the wave gets tighter. Shows Hz and the nearest note name.",
     params: {
-      min: { type: "number", doc: "Lowest Hz. Default 55." },
-      max: { type: "number", doc: "Highest Hz. Default 1760." },
-      start: { type: "number", doc: "Starting Hz. Default 220." },
+      min: { type: "number", min: 20, max: 20000, doc: "Lowest Hz. Default 55." },
+      max: { type: "number", min: 20, max: 20000, doc: "Highest Hz. Default 1760." },
+      start: { type: "number", min: 20, max: 20000, doc: "Starting Hz. Default 220." },
       showNotes: { type: "boolean", doc: "Show the nearest note name. Default true." },
       loudness: { type: "boolean", doc: "Also offer a loudness (amplitude) slider. Default false." },
     },
@@ -117,7 +122,7 @@ export const WIDGETS: Record<string, { doc: string; params: ParamSpecs }> = {
   fretboard: {
     doc: "A playable guitar fretboard in standard tuning, low E string at the bottom (as in tab).",
     params: {
-      frets: { type: "number", doc: "How many frets to draw. Default 12." },
+      frets: { type: "number", min: 1, max: GUITAR_FRETS, integer: true, doc: "How many frets to draw. Default 12." },
       positions: { type: "fretpos[]", doc: 'Exact places to mark, as string/fret: ["6/3", "5/2"].' },
       highlight: { type: "pitch[]", doc: "Mark every place these sounding pitches can be played." },
       pitchClasses: { type: "pitchclass[]", doc: "Mark every place any octave of these notes can be played." },
@@ -125,7 +130,7 @@ export const WIDGETS: Record<string, { doc: string; params: ParamSpecs }> = {
     },
   },
   staff: {
-    doc: "A staff with notes on it. Click a note to hear it.",
+    doc: "A staff with notes on it. Select a note (click or tap) to hear it.",
     params: {
       clef: { type: `enum:${CLEFS}`, doc: "Default treble." },
       notes: { type: "pitch[]", doc: "Notes drawn left to right." },
@@ -135,7 +140,7 @@ export const WIDGETS: Record<string, { doc: string; params: ParamSpecs }> = {
     },
   },
   linked: {
-    doc: "The central widget: the same notes shown on staff, keyboard and fretboard at once. With `interactive`, clicking a key, a fret or a staff line changes the note everywhere.",
+    doc: "The central widget: the same notes shown on staff, keyboard and fretboard at once. With `interactive`, pressing a key, a fret or a staff line changes the note everywhere.",
     params: {
       notes: { type: "pitch[]", required: true, doc: "The notes shown to begin with (sounding pitch)." },
       views: { type: `enum[]:${VIEWS}`, doc: "Default [staff, keyboard, fretboard]." },
@@ -151,6 +156,7 @@ export const WIDGETS: Record<string, { doc: string; params: ParamSpecs }> = {
       to: { type: "pitch", required: true, doc: "Upper note." },
       interactive: { type: "boolean", doc: "Let the learner move the upper note. Default true." },
       views: { type: `enum[]:${VIEWS}`, doc: "Default [staff, keyboard]." },
+      labels: { type: "enum:names|numbers", doc: "`numbers` shows only the interval's number (\"Third\", \"Fifth\"), with no quality, half-step count or ratio: for lessons before qualities are taught. Default names." },
     },
   },
   scale: {
@@ -171,11 +177,11 @@ export const WIDGETS: Record<string, { doc: string; params: ParamSpecs }> = {
     },
   },
   "chord-diagram": {
-    doc: "A row of guitar chord boxes. Click one to strum it. Only chords with a stored shape can be shown (see CONTENT.md).",
+    doc: "A row of guitar chord boxes. Press one to strum it. Only chords with a stored shape can be shown (see CONTENT.md).",
     params: { chords: { type: "chord[]", required: true, doc: 'e.g. ["Em", "Am", "C", "G", "D"].' } },
   },
   "circle-of-fifths": {
-    doc: "The circle of fifths: click a key to see its signature, its scale and its relative minor.",
+    doc: "The circle of fifths: press a key to see its signature, its scale and its relative minor.",
     params: { key: { type: "key", doc: "Key selected to begin with. Default C." } },
   },
 
@@ -183,7 +189,7 @@ export const WIDGETS: Record<string, { doc: string; params: ParamSpecs }> = {
   metronome: {
     doc: "A visual metronome: a swinging arm and a light per beat, with tempo and time signature controls.",
     params: {
-      tempo: { type: "number", doc: "Beats per minute. Default 80." },
+      tempo: { type: "number", min: 30, max: 240, doc: "Beats per minute. Default 80." },
       time: { type: "time", doc: "Default 4/4." },
     },
   },
@@ -192,7 +198,7 @@ export const WIDGETS: Record<string, { doc: string; params: ParamSpecs }> = {
     params: {
       pattern: { type: "rhythm", required: true, doc: 'Durations: "q q e e h | w".' },
       time: { type: "time", doc: "Default 4/4." },
-      tempo: { type: "number", doc: "Default 80." },
+      tempo: { type: "number", min: 30, max: 240, doc: "Default 80." },
       count: { type: "boolean", doc: "Write the counting (1 & 2 &) underneath. Default true." },
       tap: { type: "boolean", doc: "Offer tap-along. Default false." },
     },
@@ -203,7 +209,7 @@ export const WIDGETS: Record<string, { doc: string; params: ParamSpecs }> = {
       notes: { type: "melody", required: true, doc: 'Melody tokens: "C4:q D4:q E4:h | G4:w". Sounding pitch.' },
       title: { type: "string", doc: "Shown above, e.g. the tune's name and origin." },
       time: { type: "time", doc: "Default 4/4." },
-      tempo: { type: "number", doc: "Default 90." },
+      tempo: { type: "number", min: 30, max: 240, doc: "Default 90." },
       key: { type: "key", doc: "Key signature. Default C." },
       clef: { type: `enum:${CLEFS}`, doc: "Default treble." },
       views: { type: `enum[]:${VIEWS}`, doc: "Default [staff, keyboard]." },
@@ -216,7 +222,7 @@ export const WIDGETS: Record<string, { doc: string; params: ParamSpecs }> = {
       notes: { type: "tabline", required: true, doc: 'Tab tokens, string/fret:duration: "6/0:q 6/3:q 5/0:h".' },
       title: { type: "string", doc: "Shown above." },
       time: { type: "time", doc: "Default 4/4." },
-      tempo: { type: "number", doc: "Default 90." },
+      tempo: { type: "number", min: 30, max: 240, doc: "Default 90." },
       staff: { type: "boolean", doc: "Draw the staff above the tab. Default true." },
     },
   },
@@ -224,8 +230,8 @@ export const WIDGETS: Record<string, { doc: string; params: ParamSpecs }> = {
     doc: "A chord progression played in time, each chord shown as it sounds.",
     params: {
       chords: { type: "string", required: true, doc: 'Chord symbols ("C G Am F") or, with `key`, Roman numerals ("I V vi IV"). One bar each.' },
-      key: { type: "key", doc: "Needed for Roman numerals; also labels symbols with their numeral." },
-      tempo: { type: "number", doc: "Default 90." },
+      key: { type: "key", doc: "Needed for Roman numerals; also labels symbols with their numeral, so leave it out before Roman numerals are taught (Level 4)." },
+      tempo: { type: "number", min: 30, max: 240, doc: "Default 90." },
       time: { type: "time", doc: "Default 4/4." },
       instrument: { type: `enum:${INSTRUMENTS}`, doc: "Default piano." },
       views: { type: "enum[]:staff|keyboard|fretboard|diagram", doc: "Default [keyboard]." },
@@ -233,12 +239,18 @@ export const WIDGETS: Record<string, { doc: string; params: ParamSpecs }> = {
   },
 };
 
+/** How much the learner has been taught, for the wording of explanations. */
+const VOCAB: ParamSpec = {
+  type: "enum:plain|letters|names|full",
+  doc: "Words the explanation may use. `plain`: no note names, half steps or interval names (Level 0). `letters`: letter names only, a black key is described by where it is. `names`: sharps, flats and half steps, no octave numbers or interval names. `full` (default): everything. Set it in lessons that come before those ideas are taught.",
+};
+
 const NOTE_SOURCE: ParamSpecs = {
   clef: { type: "enum:treble|bass", doc: "For staff views. Default treble." },
   range: { type: "range", doc: "Lowest and highest pitch asked. Default depends on the view." },
   accidentals: { type: "boolean", doc: "Include sharps and flats. Default false." },
-  strings: { type: "number[]", doc: "Guitar strings to draw from (1 = high E … 6 = low E). Default all." },
-  maxFret: { type: "number", doc: "Highest fret asked. Default 5." },
+  strings: { type: "number[]", min: 1, max: 6, integer: true, doc: "Guitar strings to draw from (1 = high E … 6 = low E). Default all." },
+  maxFret: { type: "number", min: 0, max: GUITAR_FRETS, integer: true, doc: "Highest fret asked. Default 5." },
 };
 
 export const EXERCISES: Record<string, { doc: string; group: "identify" | "ear" | "play" | "build"; params: ParamSpecs }> = {
@@ -258,9 +270,13 @@ export const EXERCISES: Record<string, { doc: string; group: "identify" | "ear" 
     doc: "Two notes are shown; name the interval between them.",
     params: {
       view: { type: "enum:staff|keyboard|fretboard", required: true, doc: "Where the notes are shown." },
-      intervals: { type: "interval[]", required: true, doc: 'Intervals drawn from, e.g. ["m2", "M2"].' },
-      labels: { type: "enum:names|steps", doc: "`steps` words the answers as half steps / whole steps (for m2 and M2). Default names." },
+      intervals: { type: "interval[]", required: true, doc: 'Intervals drawn from, e.g. ["m2", "M2"]. The fretboard view shows both notes on one string of a 20-fret neck, so every interval must be at most 20 half steps (a minor thirteenth; at most an octave with `labels: numbers`): wider ones are refused.' },
+      labels: {
+        type: "enum:names|steps|numbers",
+        doc: "`steps` words the answers as half steps / whole steps (for m2 and M2). `numbers` asks for the number only (Second, Third, Fifth …) between two natural notes, for use before qualities are taught: only the numbers of `intervals` are used, so [M2, M3, P5] and [m2, m3, P5] mean the same. Default names.",
+      },
       clef: { type: "enum:treble|bass", doc: "Default treble." },
+      vocab: VOCAB,
     },
   },
   "name-chord": {
@@ -278,7 +294,7 @@ export const EXERCISES: Record<string, { doc: string; group: "identify" | "ear" 
     group: "identify",
     doc: "A key signature is shown; name the key.",
     params: {
-      maxAccidentals: { type: "number", doc: "Up to this many sharps or flats. Default 3." },
+      maxAccidentals: { type: "number", min: 0, max: 7, integer: true, doc: "Up to this many sharps or flats. Default 3." },
       mode: { type: "enum:major|minor|both", doc: "Default major." },
       clef: { type: "enum:treble|bass", doc: "Default treble." },
     },
@@ -303,8 +319,8 @@ export const EXERCISES: Record<string, { doc: string; group: "identify" | "ear" 
     group: "identify",
     doc: "Given a fundamental frequency, pick the frequency of its nth harmonic (or which harmonic a frequency is).",
     params: {
-      fundamentals: { type: "number[]", doc: "Fundamentals in Hz. Default [100, 110, 200, 220]." },
-      maxHarmonic: { type: "number", doc: "Default 5." },
+      fundamentals: { type: "number[]", min: 20, max: 5000, doc: "Fundamentals in Hz. Default [100, 110, 200, 220]." },
+      maxHarmonic: { type: "number", min: 2, max: 16, integer: true, doc: "Default 5." },
     },
   },
 
@@ -313,9 +329,10 @@ export const EXERCISES: Record<string, { doc: string; group: "identify" | "ear" 
     group: "ear",
     doc: "Two notes play one after the other; is the second higher or lower?",
     params: {
-      minSemitones: { type: "number", doc: "Smallest gap. Default 2." },
-      maxSemitones: { type: "number", doc: "Largest gap. Default 12." },
+      minSemitones: { type: "number", min: 1, max: 24, integer: true, doc: "Smallest gap. Default 2." },
+      maxSemitones: { type: "number", min: 1, max: 24, integer: true, doc: "Largest gap. Default 12." },
       timbre: { type: `enum:${TIMBRES}`, doc: "Default piano." },
+      vocab: VOCAB,
     },
   },
   "ear-interval": {
@@ -325,6 +342,7 @@ export const EXERCISES: Record<string, { doc: string; group: "identify" | "ear" 
       intervals: { type: "interval[]", required: true, doc: "Intervals drawn from." },
       mode: { type: "enum:melodic|harmonic|both", doc: "One note after the other, together, or either. Default melodic." },
       labels: { type: "enum:names|steps", doc: "As for name-interval." },
+      vocab: VOCAB,
     },
   },
   "ear-chord": {
@@ -343,7 +361,7 @@ export const EXERCISES: Record<string, { doc: string; group: "identify" | "ear" 
   "ear-same-note": {
     group: "ear",
     doc: "Two notes play; are they the same note, an octave apart, or different notes?",
-    params: { timbre: { type: `enum:${TIMBRES}`, doc: "Default piano." } },
+    params: { timbre: { type: `enum:${TIMBRES}`, doc: "Default piano." }, vocab: VOCAB },
   },
   "ear-rhythm": {
     group: "ear",
@@ -351,7 +369,7 @@ export const EXERCISES: Record<string, { doc: string; group: "identify" | "ear" 
     params: {
       time: { type: "time", doc: "Default 4/4." },
       values: { type: "duration[]", required: true, doc: "Note values used." },
-      tempo: { type: "number", doc: "Default 80." },
+      tempo: { type: "number", min: 30, max: 240, doc: "Default 80." },
     },
   },
   "ear-find-note": {
@@ -360,7 +378,8 @@ export const EXERCISES: Record<string, { doc: string; group: "identify" | "ear" 
     params: {
       instrument: { type: `enum:${INSTRUMENTS}`, doc: "Default piano." },
       scale: { type: "scaletype", doc: "Draw notes from this scale on C. Default major." },
-      range: { type: "range", doc: "Default [C4, C5]." },
+      range: { type: "range", doc: "Default [C4, C5]. Must hold at least two notes of the scale (on the guitar: within the first twelve frets)." },
+      vocab: VOCAB,
     },
   },
 
@@ -386,10 +405,11 @@ export const EXERCISES: Record<string, { doc: string; group: "identify" | "ear" 
   },
   "play-chord": {
     group: "play",
-    doc: "A chord symbol is shown; press its notes (piano) or fret its shape (guitar), then check.",
+    doc: "A chord symbol is shown (with `show: diagram`, its chord box too); press its notes (piano) or fret its shape (guitar), then check.",
     params: {
       instrument: { type: `enum:${INSTRUMENTS}`, required: true, doc: "Which instrument answers." },
       chords: { type: "chord[]", required: true, doc: "Chords drawn from." },
+      show: { type: "enum:name|diagram", doc: "`diagram` also shows the guitar chord box, so the task is copying it onto the neck (guitar only; every chord needs a stored shape). Default name." },
     },
   },
   "tap-rhythm": {
@@ -398,8 +418,8 @@ export const EXERCISES: Record<string, { doc: string; group: "identify" | "ear" 
     params: {
       time: { type: "time", doc: "Default 4/4." },
       values: { type: "duration[]", required: true, doc: "Note values used." },
-      bars: { type: "number", doc: "1 or 2. Default 1." },
-      tempo: { type: "number", doc: "Default 72." },
+      bars: { type: "number", min: 1, max: 2, integer: true, doc: "1 or 2. Default 1." },
+      tempo: { type: "number", min: 30, max: 240, doc: "Default 72." },
     },
   },
 
@@ -411,7 +431,8 @@ export const EXERCISES: Record<string, { doc: string; group: "identify" | "ear" 
       intervals: { type: "interval[]", required: true, doc: "Intervals drawn from." },
       direction: { type: "enum:up|down|both", doc: "Default up." },
       instrument: { type: `enum:${INSTRUMENTS}`, doc: "Default piano." },
-      labels: { type: "enum:names|steps", doc: "As for name-interval." },
+      labels: { type: "enum:names|steps|numbers", doc: "As for name-interval. With `numbers` (\"a third above the marked C\") the natural note is the shown answer, and the same letter with a sharp or flat is accepted too." },
+      vocab: VOCAB,
     },
   },
   "build-scale": {
@@ -434,7 +455,7 @@ export const EXERCISES: Record<string, { doc: string; group: "identify" | "ear" 
     group: "build",
     doc: "A key is named; choose how many sharps or flats its signature has.",
     params: {
-      maxAccidentals: { type: "number", doc: "Default 3." },
+      maxAccidentals: { type: "number", min: 0, max: 7, integer: true, doc: "Default 3." },
       mode: { type: "enum:major|minor|both", doc: "Default major." },
     },
   },
@@ -498,7 +519,8 @@ export function checkParam(type: ParamType, value: unknown): string | null {
     case "pitchclass[]":
       return ok(listOf(isPitchClass)(value), "a list of note names without octaves, e.g. [C, F, G]");
     case "range":
-      return ok(Array.isArray(value) && value.length === 2 && value.every(isPitch), "[lowest, highest], e.g. [C4, C5]");
+      if (!(Array.isArray(value) && value.length === 2 && value.every(isPitch))) return "must be [lowest, highest], e.g. [C4, C5]";
+      return ok(midiOf(value[0] as string) <= midiOf(value[1] as string), "[lowest, highest] with the lower note first, e.g. [C4, C5]");
     case "interval[]":
       return ok(listOf(isInterval)(value), "a list of intervals, e.g. [m3, M3, P5]");
     case "chord":
@@ -538,7 +560,121 @@ export function checkParam(type: ParamType, value: unknown): string | null {
   }
 }
 
+function checkBounds(spec: ParamSpec, value: unknown): string | null {
+  if (spec.type !== "number" && spec.type !== "number[]") return null;
+  const nums = (Array.isArray(value) ? value : [value]) as number[];
+  const each = spec.type === "number[]" ? "each be " : "be ";
+  if (spec.integer && !nums.every(Number.isInteger)) return `must ${each}a whole number`;
+  if (spec.min !== undefined && nums.some((n) => n < spec.min!)) return `must ${each}at least ${spec.min}`;
+  if (spec.max !== undefined && nums.some((n) => n > spec.max!)) return `must ${each}at most ${spec.max}`;
+  return null;
+}
+
 /** Check a parameter mapping against a spec. Returns messages; empty = valid. */
+// --- checks across parameters --------------------------------------------
+// Some declarations are wrong only in combination (an interval too wide for
+// the view it is shown in). These run after each parameter has passed its
+// own check, and are keyed on the kind's `params` object, which is what the
+// loader hands to checkParams.
+
+const str = (v: unknown, fallback: string) => (typeof v === "string" ? v : fallback);
+const CROSS_CHECKS = new WeakMap<ParamSpecs, (params: Record<string, unknown>) => string[]>();
+
+/** The widest interval any drill asks for: two octaves. */
+const MAX_DRILL_SEMITONES = 24;
+function intervalDrillProblems(p: Record<string, unknown>): string[] {
+  if (!Array.isArray(p.intervals)) return [];
+  const ivs = p.intervals.filter(isInterval);
+  const out: string[] = [];
+  if (ivs.some((iv) => parseInterval(iv).num === 1)) out.push("`intervals` may not include a unison (P1): there is no second note to name or play");
+  const wide = ivs.filter((iv) => semitones(iv) > MAX_DRILL_SEMITONES);
+  if (wide.length) out.push(`\`intervals\` ${wide.join(", ")} ${wide.length === 1 ? "is" : "are"} wider than two octaves, more than the instruments shown can hold`);
+  return out;
+}
+/** The chords a `chords` or `roots` × `types` declaration names. */
+function declaredChords(p: Record<string, unknown>): string[] {
+  if (Array.isArray(p.chords) && p.chords.length) return p.chords.filter(isChordSymbol).map((c) => chordSymbol(parseChord(c)));
+  if (!Array.isArray(p.roots) || !Array.isArray(p.types)) return [];
+  const out: string[] = [];
+  for (const r of p.roots.filter(isPitchClass)) for (const t of p.types.filter(isChordType)) out.push(pcName(parsePitchClass(r)) + CHORDS[t].suffix);
+  return out;
+}
+function shapeProblems(p: Record<string, unknown>, why: string): string[] {
+  const missing = declaredChords(p).filter((c) => !GUITAR_SHAPES[c]);
+  if (missing.length) return [`${why} needs a stored guitar shape for every chord, and there is none for ${missing.join(", ")} (stored: ${Object.keys(GUITAR_SHAPES).join(", ")})`];
+  return []; // nothing declared: the generator's defaults all have shapes
+}
+/** A guitar question draws its note from `strings` × frets 0–`maxFret`; a
+ *  `range` that none of those places can play would be silently ignored. */
+function guitarRangeProblems(p: Record<string, unknown>): string[] {
+  if (!Array.isArray(p.range) || p.range.length !== 2 || !p.range.every(isPitch)) return [];
+  const [lo, hi] = (p.range as string[]).map(midiOf);
+  const strings = Array.isArray(p.strings) && p.strings.length ? (p.strings as number[]) : [1, 2, 3, 4, 5, 6];
+  const top = typeof p.maxFret === "number" ? p.maxFret : 5;
+  for (const string of strings) for (let fret = 0; fret <= top; fret++) if (fretMidi({ string, fret }) >= lo && fretMidi({ string, fret }) <= hi) return [];
+  return [`\`range\` holds no note that ${strings.length === 6 ? "the guitar" : `string${strings.length === 1 ? "" : "s"} ${strings.join(", ")}`} can play up to fret ${top}`];
+}
+
+CROSS_CHECKS.set(WIDGETS.progression.params, (p) => {
+  if (typeof p.chords !== "string") return [];
+  const key = typeof p.key === "string" ? p.key : undefined;
+  const bad: string[] = [];
+  for (const tok of p.chords.trim().split(/[\s|]+/).filter(Boolean)) {
+    if (isChordSymbol(tok)) continue;
+    try {
+      if (!key) throw new Error("no key");
+      romanToChord(key, tok);
+    } catch {
+      bad.push(tok);
+    }
+  }
+  if (!bad.length) return [];
+  return [`\`chords\`: ${bad.map((b) => `"${b}"`).join(", ")} ${bad.length === 1 ? "is" : "are"} neither a chord symbol nor${key ? "" : " (with `key` given)"} a Roman numeral such as I, V, vi or vii°`];
+});
+CROSS_CHECKS.set(WIDGETS.interval.params, (p) => (isPitch(p.from) && isPitch(p.to) && midiOf(p.from) > midiOf(p.to) ? ["`from` must be the lower note and `to` the upper one"] : []));
+CROSS_CHECKS.set(WIDGETS["frequency-explorer"].params, (p) => {
+  const min = typeof p.min === "number" ? p.min : 55;
+  const max = typeof p.max === "number" ? p.max : 1760;
+  const start = typeof p.start === "number" ? p.start : Math.min(Math.max(220, min), max);
+  if (min >= max) return ["`min` must be below `max`"];
+  return start < min || start > max ? ["`start` must lie between `min` and `max`"] : [];
+});
+CROSS_CHECKS.set(EXERCISES["ear-higher-lower"].params, (p) => (typeof p.minSemitones === "number" && p.minSemitones > (typeof p.maxSemitones === "number" ? p.maxSemitones : 12) ? ["`minSemitones` must not be above `maxSemitones`"] : []));
+CROSS_CHECKS.set(EXERCISES["build-interval"].params, intervalDrillProblems);
+CROSS_CHECKS.set(EXERCISES["name-chord"].params, (p) => (p.view === "diagram" ? shapeProblems(p, "`view: diagram`") : []));
+CROSS_CHECKS.set(EXERCISES["play-chord"].params, (p) => {
+  if (p.show !== "diagram") return [];
+  return p.instrument === "guitar" ? shapeProblems(p, "`show: diagram`") : ["`show: diagram` is for `instrument: guitar` only"];
+});
+CROSS_CHECKS.set(EXERCISES["play-note"].params, (p) => {
+  if (p.instrument !== "guitar") return p.from === "tab" ? ["`from: tab` is for `instrument: guitar` only"] : [];
+  return guitarRangeProblems(p);
+});
+CROSS_CHECKS.set(EXERCISES["name-note"].params, (p) => (p.view === "fretboard" || p.view === "tab" ? guitarRangeProblems(p) : []));
+
+CROSS_CHECKS.set(EXERCISES["name-interval"].params, (p) => {
+  const general = intervalDrillProblems(p);
+  if (general.length) return general;
+  if (p.view !== "fretboard" || !Array.isArray(p.intervals)) return [];
+  const ivs = p.intervals.filter(isInterval);
+  if (str(p.labels, "names") === "numbers") {
+    const wide = ivs.filter((iv) => parseInterval(iv).num > 8);
+    return wide.length ? [`\`intervals\` ${wide.join(", ")} cannot be shown with \`view: fretboard\` and \`labels: numbers\`: both notes sit on one string within twelve frets, so the widest is an octave`] : [];
+  }
+  const wide = ivs.filter((iv) => semitones(iv) > GUITAR_FRETS);
+  return wide.length ? [`\`intervals\` ${wide.join(", ")} cannot be shown with \`view: fretboard\`: both notes sit on one string of a ${GUITAR_FRETS}-fret neck, so the widest interval is ${GUITAR_FRETS} half steps`] : [];
+});
+CROSS_CHECKS.set(EXERCISES["ear-find-note"].params, (p) => {
+  if (!Array.isArray(p.range) || p.range.length !== 2 || !p.range.every(isPitch)) return [];
+  const scale = isScaleType(p.scale) ? p.scale : "major";
+  const guitar = p.instrument === "guitar";
+  const [a, b] = (p.range as string[]).map(midiOf).sort((x, y) => x - y);
+  const pcs = new Set(scaleNotes("C4", scale).map((n) => pc(toMidi(n))));
+  let n = 0;
+  for (let m = a; m <= b; m++) if (pcs.has(pc(m)) && (!guitar || positionsOf(m, 12).length > 0)) n++;
+  return n < 2 ? [`\`range\` holds ${n === 0 ? "no note" : "only one note"} of the C ${scale} scale${guitar ? " that the first twelve frets can play" : ""}; it needs at least two (a reference note and one to find)`] : [];
+});
+
 export function checkParams(specs: ParamSpecs, params: Record<string, unknown>, ignore: readonly string[] = []): string[] {
   const out: string[] = [];
   for (const [name, value] of Object.entries(params)) {
@@ -548,11 +684,13 @@ export function checkParams(specs: ParamSpecs, params: Record<string, unknown>, 
       out.push(`unknown parameter \`${name}\` (allowed: ${Object.keys(specs).join(", ") || "none"})`);
       continue;
     }
-    const problem = checkParam(spec.type, value);
+    const problem = checkParam(spec.type, value) ?? checkBounds(spec, value);
     if (problem) out.push(`\`${name}\` ${problem}`);
   }
   for (const [name, spec] of Object.entries(specs)) {
     if (spec.required && params[name] === undefined) out.push(`\`${name}\` is required`);
   }
+  const cross = CROSS_CHECKS.get(specs);
+  if (cross && out.length === 0) out.push(...cross(params));
   return out;
 }

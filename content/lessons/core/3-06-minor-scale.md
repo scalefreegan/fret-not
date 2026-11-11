@@ -84,7 +84,7 @@ A minor and C major contain exactly the same seven notes. So do E minor and G ma
 - The **relative minor** starts on the **sixth note** of a major scale. The sixth note of C major is A, so its relative minor is A minor.
 - Going the other way, the **relative major** starts on the **third note** of a minor scale.
 
-Relatives share a **key signature**. No sharps or flats means C major *or* A minor. One sharp means G major *or* E minor. Click a few keys on the circle and read off each one's relative minor.
+Relatives share a **key signature**. No sharps or flats means C major *or* A minor. One sharp means G major *or* E minor. Press a few keys on the circle and read off each one's relative minor.
 
 ```widget
 type: circle-of-fifths

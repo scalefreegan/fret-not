@@ -15,7 +15,8 @@ export interface ConceptProgress {
   /** 0 = still learning. 1+ = in spaced review; a higher box means a longer
    *  gap before the next review (REVIEW_INTERVAL_DAYS[box - 1]). */
   box: number;
-  /** ISO time the next review falls due; null while box is 0. */
+  /** ISO time of the start of the local day the next review falls due (it is
+   *  due all of that day, and after); null while box is 0. */
   dueAt: string | null;
   lastSeenAt: string | null;
 }
@@ -34,6 +35,10 @@ export interface Progress {
   lessons: Record<string, LessonProgress>;
   /** Levels below this were unlocked by the placement check. */
   placedLevel: number;
+  /** The highest level that has ever been open to this learner (by mastery
+   *  or placement). Levels up to it stay open: see levelStatuses. Absent in
+   *  files written before it existed, which reads as 0. */
+  openedLevel?: number;
   updatedAt: string;
 }
 
@@ -55,8 +60,26 @@ export interface AnswerResult {
   correct: boolean;
 }
 
-const DAY_MS = 24 * 60 * 60 * 1000;
-const addDays = (now: Date, days: number): string => new Date(now.getTime() + days * DAY_MS).toISOString();
+/** Reviews are due by calendar day, in the learner's own time zone (the
+ *  server and the browser are the same machine): "due tomorrow" means from
+ *  the start of tomorrow, whatever time of day today's practice was. */
+const startOfLocalDay = (d: Date, plusDays = 0): Date => new Date(d.getFullYear(), d.getMonth(), d.getDate() + plusDays);
+const addDays = (now: Date, days: number): string => startOfLocalDay(now, days).toISOString();
+/** True once the local day `dueAt` falls on has begun. Older files stored a
+ *  clock time (now + N×24h); they are read by their day, like the rest. */
+export function isDue(dueAt: string | null, now: Date): boolean {
+  if (dueAt === null) return false;
+  const t = Date.parse(dueAt);
+  return !Number.isNaN(t) && startOfLocalDay(new Date(t)).getTime() <= now.getTime();
+}
+const dueDay = (dueAt: string): number => startOfLocalDay(new Date(Date.parse(dueAt))).getTime();
+
+// Progress is plain JSON keyed by ids, so a key is only ever read as an OWN
+// property: an id such as "constructor" must find nothing, not a built-in.
+// "__proto__" cannot be stored by assignment at all, so it is never recorded
+// (the loader refuses both as ids).
+const own = <T>(map: Record<string, T>, key: string): T | undefined => (Object.hasOwn(map, key) ? map[key] : undefined);
+const storable = (key: string): boolean => key !== "__proto__";
 const intervalFor = (box: number): number => REVIEW_INTERVAL_DAYS[Math.min(box, REVIEW_INTERVAL_DAYS.length) - 1];
 
 function blankConcept(): ConceptProgress {
@@ -77,7 +100,7 @@ export function masteryOf(recent: boolean[]): number {
 }
 
 export function emptyProgress(profile: string, now: Date): Progress {
-  return { version: 1, profile, concepts: {}, lessons: {}, placedLevel: 0, updatedAt: now.toISOString() };
+  return { version: 1, profile, concepts: {}, lessons: {}, placedLevel: 0, openedLevel: 0, updatedAt: now.toISOString() };
 }
 
 /** Fold answers in. A concept reaching mastery enters box 1. For a concept
@@ -88,14 +111,15 @@ export function emptyProgress(profile: string, now: Date): Progress {
 export function recordAnswers(progress: Progress, results: AnswerResult[], now: Date): Progress {
   const byConcept = new Map<string, boolean[]>();
   for (const r of results) {
+    if (!storable(r.concept)) continue;
     const list = byConcept.get(r.concept) ?? [];
     list.push(r.correct);
     byConcept.set(r.concept, list);
   }
   const concepts = { ...progress.concepts };
   for (const [id, answers] of byConcept) {
-    const prev = concepts[id] ?? blankConcept();
-    const wasDue = prev.box >= 1 && prev.dueAt !== null && Date.parse(prev.dueAt) <= now.getTime();
+    const prev = own(concepts, id) ?? blankConcept();
+    const wasDue = prev.box >= 1 && isDue(prev.dueAt, now);
     const recent = [...prev.recent, ...answers].slice(-RECENT_WINDOW);
     const next: ConceptProgress = {
       recent,
@@ -129,27 +153,38 @@ export function recordAnswers(progress: Progress, results: AnswerResult[], now: 
  *  first completion; `bestScore` the best of all runs. */
 export function recordLesson(progress: Progress, lessonId: string, score: number, now: Date): Progress {
   const s = Math.min(1, Math.max(0, Number.isFinite(score) ? score : 0));
-  const prev = progress.lessons[lessonId];
+  if (!storable(lessonId)) return progress;
+  const prev = own(progress.lessons, lessonId);
   const entry: LessonProgress = prev ? { completedAt: prev.completedAt, bestScore: Math.max(prev.bestScore, s), runs: prev.runs + 1 } : { completedAt: now.toISOString(), bestScore: s, runs: 1 };
   return { ...progress, lessons: { ...progress.lessons, [lessonId]: entry }, updatedAt: now.toISOString() };
 }
 
 /** Mastered = in spaced review (which a concept enters on reaching
  *  MASTERY_THRESHOLD with MIN_ATTEMPTS answers, or by placement). Once there
- *  it stays mastered — a bad review shortens its interval instead of
- *  re-locking levels. */
+ *  it stays mastered: a bad review shortens its interval. (What keeps a level
+ *  open once opened is `openedLevel`, not this.) */
 export function isMastered(cp: ConceptProgress | undefined): boolean {
   if (!cp) return false;
   return cp.box >= 1 || (cp.mastery >= MASTERY_THRESHOLD && cp.attempts >= MIN_ATTEMPTS);
 }
 
-/** Concept ids whose review is due at `now`, most overdue first. */
-export function dueConcepts(progress: Progress, now: Date): string[] {
-  const t = now.getTime();
+/** Concept ids whose review is due today (or overdue), most overdue first.
+ *  With `known` (see reviewableConcepts), ids outside it are left out: a
+ *  concept the curriculum no longer has, or one no exercise tests, could
+ *  never be reviewed and so must not be counted as waiting. */
+export function dueConcepts(progress: Progress, now: Date, known?: ReadonlySet<string>): string[] {
   return Object.entries(progress.concepts)
-    .filter(([, cp]) => cp.box >= 1 && cp.dueAt !== null && Date.parse(cp.dueAt) <= t)
-    .sort((a, b) => Date.parse(a[1].dueAt!) - Date.parse(b[1].dueAt!) || a[0].localeCompare(b[0]))
+    .filter(([id, cp]) => cp.box >= 1 && isDue(cp.dueAt, now) && (!known || known.has(id)))
+    .sort((a, b) => dueDay(a[1].dueAt!) - dueDay(b[1].dueAt!) || a[0].localeCompare(b[0]))
     .map(([id]) => id);
+}
+
+/** The concepts a review can actually ask about: in the curriculum, and
+ *  tested by at least one exercise of a lesson that loaded. Pass the result
+ *  to dueConcepts. */
+export function reviewableConcepts(content: Pick<Content, "concepts" | "lessons">): Set<string> {
+  const tested = new Set(content.lessons.flatMap((l) => l.exercises.map((e) => e.concept)));
+  return new Set(content.concepts.filter((c) => tested.has(c.id)).map((c) => c.id));
 }
 
 export interface LevelStatus {
@@ -159,37 +194,133 @@ export interface LevelStatus {
   total: number;
   lessonsDone: number;
   lessonsTotal: number;
+  /** The level whose mastery decides whether this one opens (see
+   *  levelStatuses), or null when nothing gates it. The page names THIS level
+   *  in its "locked until…" text. */
+  gate: number | null;
+  /** Of the gate level's reviewable concepts in `gateTracks`: how many are
+   *  mastered, and how many there are. Both 0 when `gate` is null. */
+  gateMastered: number;
+  gateTotal: number;
+  /** The tracks the gate was counted over: the choice that leaves this
+   *  learner the fewest concepts still to master. Empty when `gate` is null. */
+  gateTracks: string[];
 }
-/** One entry per level in content.levels. Level 0 is always unlocked; level n
- *  is unlocked when n ≤ placedLevel or level n-1 has UNLOCK_FRACTION of its
- *  concepts mastered. Outline levels are never unlocked. */
-export function levelStatuses(content: Pick<Content, "levels" | "concepts" | "lessons">, progress: Progress): LevelStatus[] {
+
+interface Gate {
+  level: number;
+  mastered: number;
+  total: number;
+  tracks: string[];
+  passed: boolean;
+}
+const needOf = (mastered: number, total: number): number => Math.max(0, Math.ceil(total * UNLOCK_FRACTION - 1e-9) - mastered);
+
+/** How a level stands as a gate FOR THIS LEARNER. Nobody has to learn every
+ *  instrument: the count is taken over the core concepts plus whichever
+ *  instrument tracks suit the learner best (none, one, several), i.e. the
+ *  choice of tracks that leaves the fewest concepts still to master. So a
+ *  piano-only learner is measured on core + piano, a guitar-only learner on
+ *  core + guitar, and work on a second instrument can only help. `core` here
+ *  means every track that is not an instrument track; when `instrumentTracks`
+ *  is not given, a track named "core" is the core and the rest are optional. */
+function gateOf(level: number, testable: Concept[], progress: Progress, optional: (track: string) => boolean): Gate {
+  const count = (cs: Concept[]) => ({ mastered: cs.filter((c) => isMastered(own(progress.concepts, c.id))).length, total: cs.length });
+  const core = count(testable.filter((c) => !optional(c.track)));
+  const tracks = [...new Set(testable.filter((c) => optional(c.track)).map((c) => c.track))];
+  const coreTracks = [...new Set(testable.filter((c) => !optional(c.track)).map((c) => c.track))];
+  // Each optional track is taken or left on its own merits: it joins the count
+  // exactly when that lowers (or, on a tie, does not raise) what is still
+  // needed. Trying every combination is exact; past a dozen optional tracks
+  // (never, in practice) all of them are counted.
+  const per = tracks.map((t) => ({ track: t, ...count(testable.filter((c) => c.track === t)) }));
+  let best: { mastered: number; total: number; tracks: string[] } | null = null;
+  const combos = per.length <= 12 ? 1 << per.length : 1;
+  for (let mask = 0; mask < combos; mask++) {
+    const chosen = per.length <= 12 ? per.filter((_, i) => mask & (1 << i)) : per;
+    const mastered = core.mastered + chosen.reduce((n, t) => n + t.mastered, 0);
+    const total = core.total + chosen.reduce((n, t) => n + t.total, 0);
+    if (total === 0) continue;
+    const cand = { mastered, total, tracks: [...coreTracks, ...chosen.map((t) => t.track)] };
+    // Fewest still needed; then the wider choice (it describes more of what
+    // the learner has done).
+    if (!best || needOf(mastered, total) < needOf(best.mastered, best.total) || (needOf(mastered, total) === needOf(best.mastered, best.total) && total > best.total)) best = cand;
+  }
+  if (!best) return { level, mastered: 0, total: 0, tracks: [], passed: true };
+  return { level, ...best, passed: needOf(best.mastered, best.total) === 0 };
+}
+
+type GateContent = Pick<Content, "levels" | "concepts" | "lessons"> & Partial<Pick<Content, "tracks">>;
+
+/** One entry per level in content.levels. Outline levels are never unlocked.
+ *  The first written level is always unlocked. A later level n is unlocked
+ *  when any of these holds:
+ *    - n ≤ placedLevel (the placement check);
+ *    - n ≤ openedLevel (it has been open before: a level never re-locks, not
+ *      after a bad review and not when the curriculum gains a concept);
+ *    - the written level before it is unlocked AND its GATE is passed.
+ *  The gate is the nearest earlier level that has reviewable concepts
+ *  (reviewableConcepts: in the curriculum and tested by an exercise of a
+ *  loaded lesson); it is passed when UNLOCK_FRACTION of them are mastered,
+ *  counted over the tracks that suit this learner (gateOf). A level with no
+ *  reviewable concepts — just added, an outline, or concepts no lesson drills
+ *  yet — asks nothing the learner could do, so it is skipped when looking
+ *  back rather than blocking everything after it. Levels open in order: a
+ *  level is never open while the written level before it is locked. */
+export function levelStatuses(content: GateContent, progress: Progress): LevelStatus[] {
   const levels = [...content.levels].sort((a, b) => a.id - b.id);
   const out: LevelStatus[] = [];
-  levels.forEach((level, i) => {
+  const reviewable = reviewableConcepts(content);
+  const instrumentTracks = content.tracks ? new Set(content.tracks.filter((t) => t.instrument).map((t) => t.id)) : null;
+  const optional = (track: string) => (instrumentTracks ? instrumentTracks.has(track) : track !== "core");
+  const opened = Math.max(progress.placedLevel, progress.openedLevel ?? 0);
+  const gates: Gate[] = [];
+  let first = true;
+  let prevUnlocked = true;
+  for (const level of levels) {
     const concepts = content.concepts.filter((c) => c.level === level.id);
     const lessons = content.lessons.filter((l) => l.level === level.id);
-    const prev = out[i - 1];
-    const prevFraction = prev && prev.total > 0 ? prev.mastered / prev.total : 0;
-    const unlocked = level.status !== "outline" && (i === 0 || level.id <= progress.placedLevel || prevFraction >= UNLOCK_FRACTION);
+    const gate = first ? undefined : [...gates].reverse().find((g) => g.total > 0);
+    const written = level.status !== "outline";
+    const unlocked: boolean = written && (first || level.id <= opened || (prevUnlocked && (!gate || gate.passed)));
+    gates.push(gateOf(level.id, concepts.filter((c) => reviewable.has(c.id)), progress, optional));
+    if (written) {
+      first = false;
+      prevUnlocked = unlocked;
+    }
     out.push({
       level: level.id,
       unlocked,
-      mastered: concepts.filter((c) => isMastered(progress.concepts[c.id])).length,
+      mastered: concepts.filter((c) => isMastered(own(progress.concepts, c.id))).length,
       total: concepts.length,
-      lessonsDone: lessons.filter((l) => progress.lessons[l.id]).length,
+      lessonsDone: lessons.filter((l) => own(progress.lessons, l.id)).length,
       lessonsTotal: lessons.length,
+      gate: gate ? gate.level : null,
+      gateMastered: gate ? gate.mastered : 0,
+      gateTotal: gate ? gate.total : 0,
+      gateTracks: gate ? gate.tracks : [],
     });
-  });
+  }
   // Back in the order content.levels came in.
   return content.levels.map((l) => out.find((s) => s.level === l.id)!);
 }
 
+/** Remember the highest level that is open, so it stays open whatever happens
+ *  to the curriculum or to a review afterwards. Returns the same object when
+ *  nothing changed. The server calls this whenever it has both the curriculum
+ *  and the progress in hand; skip it while the curriculum cannot be read (no
+ *  levels: nothing would be learned from it). */
+export function rememberOpened(content: GateContent, progress: Progress): Progress {
+  const open = levelStatuses(content, progress).filter((s) => s.unlocked).map((s) => s.level);
+  const highest = Math.max(progress.openedLevel ?? 0, ...open);
+  return highest === (progress.openedLevel ?? 0) && progress.openedLevel !== undefined ? progress : { ...progress, openedLevel: highest };
+}
+
 /** The first lesson not yet completed in an unlocked level, in path order;
  *  null when everything available is done. */
-export function nextLesson(content: Pick<Content, "levels" | "concepts" | "lessons">, progress: Progress): Lesson | null {
+export function nextLesson(content: GateContent, progress: Progress): Lesson | null {
   const unlocked = new Set(levelStatuses(content, progress).filter((s) => s.unlocked).map((s) => s.level));
-  return content.lessons.find((l) => unlocked.has(l.level) && !progress.lessons[l.id]) ?? null;
+  return content.lessons.find((l) => unlocked.has(l.level) && !own(progress.lessons, l.id)) ?? null;
 }
 
 /** Placement: the learner tested out of every level below `level`. Marks
@@ -199,8 +330,8 @@ export function nextLesson(content: Pick<Content, "levels" | "concepts" | "lesso
 export function applyPlacement(progress: Progress, level: number, concepts: Concept[], now: Date): Progress {
   const next = { ...progress.concepts };
   for (const c of concepts) {
-    if (c.level >= level) continue;
-    const prev = next[c.id] ?? blankConcept();
+    if (c.level >= level || !storable(c.id)) continue;
+    const prev = own(next, c.id) ?? blankConcept();
     if (prev.box >= PLACEMENT_BOX) continue;
     next[c.id] = { ...prev, recent: [...prev.recent], mastery: Math.max(prev.mastery, 1), box: PLACEMENT_BOX, dueAt: addDays(now, PLACEMENT_DUE_DAYS) };
   }

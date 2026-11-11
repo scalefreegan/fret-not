@@ -4,12 +4,12 @@ import type { ExerciseDecl } from "./content.ts";
 import type { Given, Question, Sound, Stimulus } from "./exercise-types.ts";
 import { GENERATED_KINDS, generateQuestions, grade, makeRng, reviewQuestions } from "./exercises.ts";
 import { chordPcs, parseChord } from "./music/chords.ts";
-import { fretMidi, GUITAR_SHAPES, shapePositions } from "./music/instruments.ts";
-import { intervalBetween, intervalText, semitones } from "./music/intervals.ts";
-import { midiOf, parsePitch, pc } from "./music/notes.ts";
+import { fretMidi, GUITAR_SHAPES, positionsOf, positionsSpellChord, shapePositions } from "./music/instruments.ts";
+import { intervalBetween, intervalName, intervalText, semitones } from "./music/intervals.ts";
+import { isBlackKey, midiName, midiOf, parsePitch, pc } from "./music/notes.ts";
 import { parseRhythm, parseTime, totalBeats } from "./music/rhythm.ts";
 import { keySignature, scaleNotes } from "./music/scales.ts";
-import { checkParams, EXERCISES } from "./registry.ts";
+import { checkParams, EXERCISES, WIDGETS } from "./registry.ts";
 
 const SEEDS = Array.from({ length: 40 }, (_, i) => i * 7919 + 1);
 
@@ -40,6 +40,12 @@ const CASES: Record<string, Record<string, unknown>[]> = {
     { view: "staff", intervals: ["m3", "M3", "P4", "P5", "m6", "M6", "P8"], clef: "bass" },
     { view: "keyboard", intervals: ["M3", "P5", "A4", "d5"] },
     { view: "fretboard", intervals: ["m2", "M2", "P5"] },
+    { view: "staff", intervals: ["M2", "M3", "m3", "P4", "P5", "M6", "M7", "P8"], labels: "numbers" },
+    { view: "keyboard", intervals: ["M2", "M3", "P5"], labels: "numbers" },
+    { view: "fretboard", intervals: ["m2", "m3", "P5", "P8"], labels: "numbers" },
+    { view: "staff", intervals: ["A2", "m3", "d4", "M3", "A4", "d5"], labels: "steps" },
+    { view: "staff", intervals: ["P4", "A4", "d5", "P5"] },
+    { view: "fretboard", intervals: ["M9", "m10", "P12"] },
   ],
   "name-chord": [
     { view: "staff" },
@@ -82,6 +88,8 @@ const CASES: Record<string, Record<string, unknown>[]> = {
     { intervals: ["M3", "P5"] },
     { intervals: ["m2", "M2"], labels: "steps", direction: "both", instrument: "guitar" },
     { intervals: ["m3", "P4", "P8"], direction: "down" },
+    { intervals: ["M2", "M3", "m3", "P4", "P5", "P8"], labels: "numbers" },
+    { intervals: ["M2", "M3", "P5"], labels: "numbers", direction: "both", instrument: "guitar" },
   ],
   "build-scale": [{ types: ["major"], tonics: ["C", "G", "D"] }, { types: ["natural-minor", "major-pentatonic"], tonics: ["A", "Eb"] }],
   "build-chord": [{ types: ["maj", "min"], roots: ["C", "E", "A"] }, { types: ["dim", "7", "maj7"], roots: ["B", "F#"] }],
@@ -137,7 +145,7 @@ function stimulusOk(s: Stimulus, where: string): void {
 function rightAnswer(q: Question): Given {
   const e = q.expected;
   if (e.type === "choice") return { type: "choice", id: e.id };
-  if (e.type === "notes") return { type: "notes", midis: [...e.midis] };
+  if (e.type === "notes") return { type: "notes", midis: [...e.midis], ...(e.positions ? { positions: e.positions } : {}) };
   if (e.type === "taps") return { type: "taps", onsets: e.onsets.map((o, i) => o + (i % 2 ? 0.9 : -0.9) * e.toleranceBeats) };
   const shape = GUITAR_SHAPES[e.symbol];
   assert.ok(shape, `test needs a stored shape for ${e.symbol}`);
@@ -152,7 +160,10 @@ function wrongAnswers(q: Question): Given[] {
     return [...others.map((c): Given => ({ type: "choice", id: c.id })), { type: "notes", midis: [60] }];
   }
   if (e.type === "notes") {
-    const out: Given[] = [{ type: "notes", midis: e.midis.map((m) => m + 1) }, { type: "notes", midis: [] }, { type: "choice", id: "x" }];
+    const off = [1, 2, 3].find((d) => !e.alsoAccept?.includes(e.midis[0] + d)) ?? 1;
+    const out: Given[] = [{ type: "notes", midis: e.midis.map((m) => m + off) }, { type: "notes", midis: [] }, { type: "choice", id: "x" }];
+    // A tab names the place: the same pitch on another string, or no place at all, is wrong.
+    if (e.positions) out.push({ type: "notes", midis: [...e.midis] }, ...positionsOf(e.midis[0], 24).filter((x) => x.string !== e.positions![0].string).map((x): Given => ({ type: "notes", midis: [...e.midis], positions: [x] })));
     if (e.midis.length > 1) out.push({ type: "notes", midis: e.midis.slice(1) });
     if (e.ordered && new Set(e.midis).size > 1) out.push({ type: "notes", midis: [...e.midis].reverse() });
     if (!e.ordered) out.push({ type: "notes", midis: [...e.midis, e.midis[0] + 1] });
@@ -230,7 +241,10 @@ function checkQuestion(q: Question, where: string): void {
     if (q.expected.type === "taps") {
       assert.deepEqual(q.expected.onsets, events.filter((e) => e.midis.length).map((e) => e.at), where);
       assert.ok(q.expected.onsets.length > 0, where);
-      assert.ok(Math.abs((q.expected.toleranceBeats * 60) / r.tempo - 0.11) < 1e-9, `${where}: about 110 ms`);
+      const secs = (q.expected.toleranceBeats * 60) / r.tempo;
+      assert.ok(secs > 0.02 && secs <= 0.11 + 1e-9, `${where}: at most about 110 ms`);
+      const on = q.expected.onsets;
+      for (let i = 1; i < on.length; i++) assert.ok(q.expected.toleranceBeats <= (on[i] - on[i - 1]) / 2 + 1e-9, `${where}: tolerance windows of neighbouring notes do not overlap`);
     }
   }
   assert.equal(grade(q, rightAnswer(q)).correct, true, `${where}: the expected answer grades correct`);
@@ -288,7 +302,7 @@ test("different seeds give different batches; makeRng is a stable stream in [0, 
   assert.ok(mean > 0.45 && mean < 0.55, `mean ${mean}`);
 });
 
-test("odd but loader-valid parameters never throw and still give sound questions", () => {
+test("odd parameters, accepted by the loader or not, never throw and still give sound questions", () => {
   const odd: [string, Record<string, unknown>][] = [
     ["name-note", { view: "staff", range: ["C4", "C4"] }],
     ["name-note", { view: "staff", range: ["C#4", "C#4"] }],
@@ -323,8 +337,6 @@ test("odd but loader-valid parameters never throw and still give sound questions
     ["ear-rhythm", { time: "4/4", values: ["w"] }],
     ["ear-rhythm", { time: "2/4", values: ["hr"] }],
     ["ear-rhythm", { time: "1/16", values: ["s"] }],
-    ["ear-find-note", { range: ["C#4", "C#4"] }],
-    ["ear-find-note", { instrument: "guitar", range: ["C1", "D1"] }],
     ["ear-find-note", { scale: "locrian", range: ["B4", "C3"] }],
     ["play-note", { instrument: "piano", from: "tab" }],
     ["play-note", { instrument: "piano", from: "staff", range: ["A0", "C8"], accidentals: true }],
@@ -342,7 +354,6 @@ test("odd but loader-valid parameters never throw and still give sound questions
     ["build-key-signature", { maxAccidentals: -4, mode: "minor" }],
   ];
   for (const [kind, params] of odd) {
-    assert.deepEqual(checkParams(EXERCISES[kind].params, params), [], `${kind} ${JSON.stringify(params)} is loader-valid`);
     for (const seed of SEEDS.slice(0, 12)) {
       const qs = generateQuestions(decl(kind, params, 4), seed);
       assert.equal(qs.length, 4, `${kind} ${JSON.stringify(params)}`);
@@ -728,4 +739,399 @@ test("reviewQuestions mixes declarations, keeps ids unique, and is deterministic
   // The same declaration twice still yields unique ids.
   const twice = reviewQuestions([decls[0], decls[0]], 3, 5);
   assert.equal(new Set(twice.map((q) => q.id)).size, 6);
+});
+
+test("name-interval: no two choices share a label or are equally right", () => {
+  // On the staff a tritone is an augmented fourth or a diminished fifth, and both may be offered: each under its own name.
+  let both = 0;
+  for (const q of many("name-interval", { view: "staff", intervals: ["A4", "d5"] }, 6)) {
+    assert.ok(q.response.type === "choice");
+    const labels = q.response.choices.map((c) => c.label);
+    assert.equal(new Set(labels).size, labels.length, labels.join(" / "));
+    if (labels.length === 2) {
+      both++;
+      assert.deepEqual([...labels].sort(), ["Augmented fourth", "Diminished fifth"]);
+    }
+  }
+  assert.ok(both > 0);
+  // Counted in half steps, an augmented second and a minor third are one answer.
+  for (const q of many("name-interval", { view: "staff", intervals: ["A2", "m3", "d4", "M3", "P4"], labels: "steps" }, 6)) {
+    assert.ok(q.response.type === "choice" && q.expected.type === "choice");
+    const sizes = q.response.choices.map((c) => semitones(c.id));
+    assert.equal(new Set(sizes).size, sizes.length, `one choice per size: ${q.response.choices.map((c) => c.id)}`);
+    const s = q.stimuli[0];
+    assert.ok(s.type === "staff");
+    assert.equal(midiOf(s.notes[1]) - midiOf(s.notes[0]), semitones(q.expected.id));
+  }
+});
+
+test("name-interval on the fretboard shows the interval it asks for, beyond an octave too", () => {
+  for (const q of many("name-interval", { view: "fretboard", intervals: ["P5", "M9", "m10", "P12"] }, 10)) {
+    const s = q.stimuli[0];
+    assert.ok(s.type === "fretboard" && q.expected.type === "choice");
+    assert.equal(s.marked[0].string, s.marked[1].string);
+    assert.equal(s.marked[1].fret - s.marked[0].fret, semitones(q.expected.id), `${q.expected.id} is ${semitones(q.expected.id)} frets`);
+    assert.ok(s.marked[1].fret <= s.maxFret && s.maxFret <= 20, "the guitar has 20 frets");
+  }
+  for (const q of many("name-interval", { view: "fretboard", intervals: ["m13", "M13", "P12"] }, 10)) {
+    const s = q.stimuli[0];
+    assert.ok(s.type === "fretboard" && s.maxFret <= 20 && s.marked.every((m) => m.fret >= 0 && m.fret <= 20));
+  }
+  // Nothing wider than the neck fits on one string: the loader refuses such a declaration, and a stray one is left out, never mis-shown.
+  for (const q of many("name-interval", { view: "fretboard", intervals: ["P5", "P15", "P19"] }, 4)) assert.ok(q.expected.type === "choice" && q.expected.id === "P5");
+  assert.match(checkParams(EXERCISES["name-interval"].params, { view: "fretboard", intervals: ["P5", "P15"] }).join(), /P15 cannot be shown/);
+});
+
+test("intervals by number only: natural notes, one choice per number, no quality words", () => {
+  const quality = /major|minor|perfect|augmented|diminished|tritone|half step/i;
+  for (const view of ["staff", "keyboard", "fretboard"]) {
+    for (const q of many("name-interval", { view, intervals: ["M2", "m3", "M3", "P4", "P5", "m6", "P8"], labels: "numbers" }, 10)) {
+      assert.ok(q.response.type === "choice" && q.expected.type === "choice");
+      assert.deepEqual(q.response.choices.map((c) => c.label).filter((l) => l === "Third").length <= 1, true);
+      assert.ok(!quality.test(q.prompt + q.explain + q.response.choices.map((c) => c.label).join(" ")), `${q.prompt} / ${q.explain}`);
+      const s = q.stimuli[0];
+      const midis = s.type === "staff" ? s.notes.map((n) => midiOf(n)) : s.type === "keyboard" ? s.marked : s.type === "fretboard" ? s.marked.map((x) => fretMidi(x)) : [];
+      assert.equal(midis.length, 2);
+      // Both notes are natural, and the letters between them count to the expected number.
+      const [lo, hi] = midis.map((m) => parsePitch(midiName(m)));
+      assert.ok(lo.acc === 0 && hi.acc === 0, `${view}: natural notes`);
+      assert.equal(String(intervalBetween(lo, hi).num), q.expected.id);
+    }
+  }
+  const c = generateQuestions(decl("name-interval", { view: "staff", intervals: ["M3", "m3", "P5"], labels: "numbers" }), 3)[0];
+  assert.deepEqual(c.response.type === "choice" && c.response.choices.map((x) => x.label), ["Third", "Fifth"]);
+
+  let sawThirdOnC = false;
+  for (const q of many("build-interval", { intervals: ["M2", "M3", "P4", "P5"], labels: "numbers", direction: "both" }, 10)) {
+    assert.ok(q.expected.type === "notes" && q.response.type === "keyboard");
+    assert.ok(!quality.test(q.prompt + q.explain), `${q.prompt} / ${q.explain}`);
+    const start = parsePitch(midiName(q.response.marked![0]));
+    const target = parsePitch(midiName(q.expected.midis[0]));
+    assert.equal(target.acc, 0);
+    const num = intervalBetween(start, target).num;
+    assert.match(q.prompt, new RegExp(["", "", "second", "third", "fourth", "fifth"][num]));
+    // The same letter with a sharp or flat is as good; a neighbouring white key is another number.
+    for (const m of q.expected.alsoAccept ?? []) {
+      assert.equal(Math.abs(m - q.expected.midis[0]), 1);
+      assert.ok(isBlackKey(m));
+      assert.equal(grade(q, { type: "notes", midis: [m] }).correct, true);
+    }
+    for (const d of [-2, -1, 1, 2]) {
+      const m: number = q.expected.midis[0] + d;
+      if (!isBlackKey(m)) assert.equal(grade(q, { type: "notes", midis: [m] }).correct, false, `${midiName(m)} is another letter`);
+    }
+    if (q.prompt === "Play the note a third above the marked C.") {
+      sawThirdOnC = true;
+      assert.deepEqual(q.expected.midis, [64]);
+      assert.deepEqual(q.expected.alsoAccept, [63]);
+      assert.match(q.explain, /C4 up to E4 is a third: 3 letter names counting both ends \(C D E\)/);
+      assert.equal(grade(q, { type: "notes", midis: [65] }).correct, false);
+    }
+  }
+  assert.ok(sawThirdOnC);
+});
+
+test("name-chord away from the staff never offers two names for the same keys", () => {
+  for (const q of many("name-chord", { view: "keyboard", types: ["maj", "min"], roots: ["C#", "Db", "F#", "Gb", "A"] }, 10)) {
+    assert.ok(q.response.type === "choice");
+    const sets = q.response.choices.map((c) => chordPcs(parseChord(c.id)).sort((a, b) => a - b).join(","));
+    assert.equal(new Set(sets).size, sets.length, q.response.choices.map((c) => c.id).join(" "));
+  }
+  const kinds = generateQuestions(decl("name-chord", { view: "staff", types: ["5", "6", "7", "maj", "min"], roots: ["C"], qualityOnly: true }), 2)[0];
+  assert.deepEqual(kinds.response.type === "choice" && kinds.response.choices.map((c) => c.label), ["Major", "Minor", "Dominant seventh", "Power chord", "Major sixth"]);
+});
+
+test("play-note from tab wants the place the tab names; from the guitar staff it explains the octave", () => {
+  for (const q of many("play-note", { instrument: "guitar", from: "tab", strings: [6, 5, 4], maxFret: 7 }, 10)) {
+    const s = q.stimuli[0];
+    assert.ok(s.type === "tab" && q.expected.type === "notes");
+    assert.deepEqual(q.expected.positions, s.positions);
+    const pos = s.positions[0];
+    assert.equal(grade(q, { type: "notes", midis: [fretMidi(pos)], positions: [pos] }).correct, true);
+    for (const other of positionsOf(fretMidi(pos), 24)) {
+      if (other.string !== pos.string) assert.equal(grade(q, { type: "notes", midis: [fretMidi(other)], positions: [other] }).correct, false, "same pitch, another string");
+    }
+  }
+  for (const q of many("play-note", { instrument: "guitar", from: "staff" }, 6)) {
+    assert.ok(q.expected.type === "notes" && q.expected.positions === undefined, "from the staff any place with that pitch counts");
+    assert.match(q.explain, /written an octave higher than it sounds/);
+    const sounding = parsePitch(midiName(q.expected.midis[0]));
+    assert.ok(q.explain.includes(`drawn as ${sounding.letter}${sounding.oct + 1}`), q.explain);
+  }
+});
+
+test("tap-rhythm: sixteenths never get overlapping tolerance windows; counts follow the beat unit", () => {
+  for (const q of many("tap-rhythm", { values: ["s", "e", "q"], tempo: 72 }, 6)) {
+    assert.ok(q.expected.type === "taps");
+    const on = q.expected.onsets;
+    for (let i = 1; i < on.length; i++) assert.ok(q.expected.toleranceBeats * 2 < on[i] - on[i - 1], `${q.expected.toleranceBeats} against a gap of ${on[i] - on[i - 1]}`);
+  }
+  for (const q of many("tap-rhythm", { time: "2/2", values: ["h", "q"], tempo: 80 }, 4)) assert.ok(!/on (3|4)\b|and (3|4)\b/.test(q.explain), `2/2 has two counts: ${q.explain}`);
+});
+
+test("ear-chord wording does not say chord twice", () => {
+  for (const q of many("ear-chord", { types: ["5", "maj"] }, 6)) assert.ok(!/chord chord/.test(q.explain), q.explain);
+});
+
+test("name-chord: no two choices look the same on keys or a chord box, added distractors included", () => {
+  const look = (id: string) => chordPcs(parseChord(id)).sort((a, b) => a - b).join(",");
+  for (const params of [
+    { view: "keyboard", chords: ["C#", "Dbm"] },
+    { view: "keyboard", chords: ["Db", "C#m", "C#dim"] },
+    { view: "keyboard", chords: ["F#", "Gbm", "Gb"] },
+    { view: "diagram", chords: ["A", "Am"] },
+  ]) {
+    for (const q of many("name-chord", params, 10)) {
+      assert.ok(q.response.type === "choice" && q.expected.type === "choice");
+      const sets = q.response.choices.map((c) => look(c.id));
+      assert.equal(new Set(sets).size, sets.length, q.response.choices.map((c) => c.id).join(" "));
+      assert.equal(q.response.choices.filter((c) => c.id === (q.expected as { id: string }).id).length, 1);
+    }
+  }
+});
+
+test("tap-rhythm: each note's window depends on its own neighbours, and grading uses it", () => {
+  // Two sixteenths then a half note, at 120: the pair is tight, the half note is not.
+  const q: Question = { id: "t", kind: "tap-rhythm", concept: "c", prompt: "", stimuli: [], response: { type: "tap", pattern: "s s e q h", time: "4/4", tempo: 120, countInBeats: 4 }, expected: { type: "taps", onsets: [0, 0.25, 0.5, 1, 2], toleranceBeats: 0.1125, tolerances: [0.1125, 0.1125, 0.1125, 0.22, 0.22] }, explain: "" };
+  assert.equal(grade(q, { type: "taps", onsets: [0, 0.25, 0.5, 1, 2.2] }).correct, true, "the half note has the full window");
+  assert.equal(grade(q, { type: "taps", onsets: [0, 0.25 + 0.15, 0.5, 1, 2] }).correct, false, "a sixteenth does not");
+  assert.equal(grade(q, { type: "taps", onsets: [0, 0.25, 0.5, 1, 2.3] }).correct, false);
+  // Without `tolerances` the single number applies to every note, as before.
+  const old: Question = { ...q, expected: { type: "taps", onsets: [0, 1], toleranceBeats: 0.2 } };
+  assert.equal(grade(old, { type: "taps", onsets: [0.19, 1.19] }).correct, true);
+  assert.equal(grade(old, { type: "taps", onsets: [0.21, 1] }).correct, false);
+  for (const tempo of [60, 72, 120, 200]) {
+    for (const g of many("tap-rhythm", { values: ["s", "e", "q", "h"], tempo, bars: 2 }, 8)) {
+      assert.ok(g.expected.type === "taps" && g.expected.tolerances);
+      const { onsets, tolerances, toleranceBeats } = g.expected;
+      assert.equal(tolerances.length, onsets.length);
+      assert.ok(Math.abs(Math.min(...tolerances) - toleranceBeats) < 1e-9);
+      const full = (0.11 * tempo) / 60;
+      onsets.forEach((o, i) => {
+        const gap = Math.min(...onsets.filter((x) => x !== o).map((x) => Math.abs(x - o)), Infinity);
+        assert.ok(Math.abs(tolerances[i] - Math.min(full, gap * 0.45)) < 1e-9, "own nearest neighbour sets the window");
+        if (i > 0) assert.ok(tolerances[i] + tolerances[i - 1] < o - onsets[i - 1], "neighbouring windows never overlap");
+      });
+      assert.equal(grade(g, { type: "taps", onsets }).correct, true);
+    }
+  }
+});
+
+test("tap-rhythm in 2/2 with sixteenths counts in four, with no nameless positions", () => {
+  for (const q of many("tap-rhythm", { time: "2/2", values: ["s", "e", "q"], tempo: 60 }, 8)) {
+    assert.ok(!/between counts/.test(q.explain), q.explain);
+    assert.ok(q.response.type === "tap");
+    const hasSixteenths = q.response.pattern.split(/[\s|]+/).some((t) => t.startsWith("s"));
+    assert.equal(/Count 4 to the bar/.test(q.explain), hasSixteenths, `${q.response.pattern}: ${q.explain}`);
+  }
+  for (const q of many("tap-rhythm", { time: "2/2", values: ["h", "q"], tempo: 60 }, 4)) assert.ok(!/Count 4 to the bar/.test(q.explain));
+});
+
+test("build-interval by number: only reachable notes are also accepted, and the answer named is the natural note", () => {
+  for (const instrument of ["piano", "guitar"]) {
+    for (const direction of ["up", "down", "both"]) {
+      for (const q of many("build-interval", { intervals: ["M2", "M3", "P5", "M7", "P8", "M9", "P12"], labels: "numbers", instrument, direction }, 12)) {
+        assert.ok(q.expected.type === "notes");
+        const target = q.expected.midis[0];
+        assert.ok(!isBlackKey(target), "the shown answer is a natural note");
+        for (const m of q.expected.alsoAccept ?? []) {
+          assert.ok(isBlackKey(m) && Math.abs(m - target) === 1);
+          if (q.response.type === "fretboard") assert.ok(positionsOf(m, q.response.maxFret).length > 0, `${midiName(m)} is not on the fretboard shown`);
+          if (q.response.type === "keyboard") assert.ok(m >= q.response.range[0] && m <= q.response.range[1]);
+        }
+        if (q.response.type === "fretboard") assert.ok(positionsOf(target, q.response.maxFret).length > 0);
+        const natural = parsePitch(midiName(target));
+        assert.ok(q.explain.includes(`${natural.letter}${natural.oct}`), q.explain);
+      }
+    }
+  }
+});
+
+test("ear-find-note: the note to find is always on the instrument shown", () => {
+  for (const params of [{}, { instrument: "guitar" }, { instrument: "piano", scale: "harmonic-minor", range: ["A5", "A5"] }, { range: ["C6", "C7"] }, { instrument: "guitar", range: ["C7", "C8"] }, { instrument: "guitar", scale: "blues", range: ["E2", "E3"] }]) {
+    for (const q of many("ear-find-note", params, 10)) {
+      assert.ok(q.expected.type === "notes");
+      const target = q.expected.midis[0];
+      if (q.response.type === "keyboard") assert.ok(target >= q.response.range[0] && target <= q.response.range[1], `${midiName(target)} outside ${q.response.range}`);
+      else if (q.response.type === "fretboard") assert.ok(positionsOf(target, q.response.maxFret).length > 0);
+      else assert.fail("unexpected response");
+      const marked = q.response.marked ?? [];
+      assert.equal(marked.length, 1);
+    }
+  }
+});
+
+test("grade: a tab position given twice is not a two-note answer", () => {
+  const pos = { string: 2, fret: 0 };
+  const two = [{ string: 2, fret: 0 }, { string: 3, fret: 0 }];
+  const q = (positions: { string: number; fret: number }[]): Question => ({ id: "p", kind: "play-note", concept: "c", prompt: "", stimuli: [], response: { type: "fretboard", maxFret: 5, mode: "set" }, expected: { type: "notes", midis: positions.map((x) => fretMidi(x)), match: "exact", ordered: false, positions }, explain: "" });
+  assert.equal(grade(q([pos]), { type: "notes", midis: [59], positions: [pos] }).correct, true);
+  assert.equal(grade(q([pos]), { type: "notes", midis: [59, 59], positions: [pos, pos] }).correct, false);
+  assert.equal(grade(q(two), { type: "notes", midis: [59, 55], positions: two }).correct, true);
+  assert.equal(grade(q(two), { type: "notes", midis: [55, 59], positions: [two[1], two[0]] }).correct, true);
+  assert.equal(grade(q(two), { type: "notes", midis: [59, 59], positions: [pos, pos] }).correct, false);
+  assert.equal(grade(q(two), { type: "notes", midis: [59], positions: [pos] }).correct, false);
+});
+
+test("registry bounds: impossible declarations are refused, not quietly replaced", () => {
+  const bad = (kind: string, params: Record<string, unknown>, re: RegExp) => {
+    const got = checkParams(EXERCISES[kind].params, params);
+    assert.ok(got.length > 0 && re.test(got.join(" ")), `${kind} ${JSON.stringify(params)} should be refused (${re}); got ${JSON.stringify(got)}`);
+  };
+  const badW = (type: string, params: Record<string, unknown>, re: RegExp) => {
+    const got = checkParams(WIDGETS[type].params, params);
+    assert.ok(got.length > 0 && re.test(got.join(" ")), `${type} ${JSON.stringify(params)} should be refused (${re}); got ${JSON.stringify(got)}`);
+  };
+  bad("name-note", { view: "staff", range: ["G5", "C4"] }, /lower note first/);
+  bad("name-note", { view: "fretboard", strings: [9, 0], maxFret: 0 }, /at most 6|at least 1/);
+  bad("name-note", { view: "tab", maxFret: 40 }, /at most 20/);
+  bad("name-note", { view: "fretboard", range: ["C7", "C8"], maxFret: 2 }, /no note/);
+  bad("name-interval", { view: "staff", intervals: ["P1"] }, /unison/);
+  bad("name-interval", { view: "staff", intervals: ["P29"] }, /two octaves/);
+  bad("build-interval", { intervals: ["P29"], instrument: "guitar" }, /two octaves/);
+  bad("build-interval", { intervals: ["P1"], labels: "numbers" }, /unison/);
+  bad("name-chord", { view: "diagram", chords: ["Bb", "F#"] }, /stored guitar shape/);
+  bad("play-chord", { instrument: "guitar", chords: ["Bb"], show: "diagram" }, /stored guitar shape/);
+  bad("play-chord", { instrument: "piano", chords: ["C"], show: "diagram" }, /guitar` only/);
+  bad("play-note", { instrument: "piano", from: "tab" }, /guitar` only/);
+  bad("play-note", { instrument: "guitar", from: "name", range: ["C1", "C2"] }, /no note/);
+  bad("tap-rhythm", { values: ["q"], tempo: -5 }, /at least 30/);
+  bad("tap-rhythm", { values: ["q"], bars: 7 }, /at most 2/);
+  bad("harmonic-frequency", { fundamentals: [0.001] }, /at least 20/);
+  bad("ear-higher-lower", { minSemitones: 9, maxSemitones: 2 }, /maxSemitones/);
+  bad("name-key", { maxAccidentals: 99 }, /at most 7/);
+  badW("progression", { chords: "C Hm Q vii°7" }, /neither a chord symbol/);
+  badW("progression", { chords: "I V vi IV" }, /neither a chord symbol/);
+  badW("fretboard", { positions: ["7/3", "1/99"] }, /positions/);
+  badW("tab", { notes: "1/25:q 6/99:q" }, /position/);
+  badW("metronome", { tempo: -5 }, /at least 30/);
+  badW("keyboard", { range: ["C5", "C3"] }, /lower note first/);
+  badW("interval", { from: "G4", to: "C4" }, /lower note/);
+  badW("fretboard", { frets: 24 }, /at most 20/);
+  // And what must still pass.
+  for (const [kind, params] of [
+    ["name-chord", { view: "diagram" }],
+    ["name-chord", { view: "diagram", chords: ["Em", "Am", "E", "A"] }],
+    ["play-chord", { instrument: "guitar", chords: ["Em", "Am"], show: "diagram" }],
+    ["play-note", { instrument: "guitar", from: "tab", strings: [6, 5], maxFret: 5 }],
+    ["name-note", { view: "fretboard", maxFret: 0 }],
+    ["name-note", { view: "staff", range: ["C4", "C4"] }],
+    ["ear-interval", { intervals: ["P8", "P5", "m2"], mode: "harmonic", vocab: "plain" }],
+    ["build-interval", { intervals: ["m2", "M2"], labels: "steps", vocab: "letters" }],
+  ] as [string, Record<string, unknown>][]) assert.deepEqual(checkParams(EXERCISES[kind].params, params), [], `${kind} ${JSON.stringify(params)}`);
+  assert.deepEqual(checkParams(WIDGETS.progression.params, { chords: "I V vi IV", key: "C" }), []);
+  assert.deepEqual(checkParams(WIDGETS.progression.params, { chords: "i bVII bVI V", key: "Am" }), []);
+  assert.deepEqual(checkParams(WIDGETS.progression.params, { chords: "C G Am F" }), []);
+});
+
+/** Words a learner has not met at each vocabulary level. */
+const OCTAVE_NUMBER = /[A-G][♯♭]?\d/;
+const ACCIDENTAL = /[♯♭]|\bsharp\b|\bflat\b/;
+const INTERVAL_NAME = /\b(major|minor|perfect|augmented|diminished) (second|third|fourth|fifth|sixth|seventh|octave|unison)|tritone/i;
+const NOTE_LETTER = /\b[A-G]\b(?! minor| major)/;
+
+test("vocab: explanations stay inside what the learner has been taught", () => {
+  const texts = (kind: string, params: Record<string, unknown>) => SEEDS.flatMap((seed) => generateQuestions(decl(kind, params, 6), seed)).map((q) => ({ q, said: `${q.prompt} ${q.explain} ${q.stimuli.map((s) => (s.type === "text" ? s.text : "")).join(" ")}` }));
+  // plain: no note names, octave numbers, accidentals or half steps.
+  for (const [kind, params] of [
+    ["ear-higher-lower", { vocab: "plain", minSemitones: 1, maxSemitones: 12 }],
+    ["ear-same-note", { vocab: "plain" }],
+    ["name-interval", { view: "fretboard", intervals: ["m2", "M2"], labels: "steps", vocab: "plain" }],
+  ] as [string, Record<string, unknown>][]) {
+    for (const { said } of texts(kind, params)) {
+      assert.ok(!OCTAVE_NUMBER.test(said) && !ACCIDENTAL.test(said) && !NOTE_LETTER.test(said), `${kind} plain: ${said}`);
+      if (kind !== "name-interval") assert.ok(!/half step/.test(said), `${kind} plain: ${said}`);
+    }
+  }
+  // Level 0 consonance: the interval is named as its choice is, nothing more.
+  for (const { q } of texts("ear-interval", { intervals: ["P8", "P5", "m2"], mode: "harmonic", vocab: "plain" })) assert.ok(!OCTAVE_NUMBER.test(q.explain) && !/half step/.test(q.explain), q.explain);
+  // letters: letter names, no accidentals or octave numbers, no interval names.
+  for (const [kind, params] of [
+    ["name-interval", { view: "keyboard", intervals: ["m2", "M2"], labels: "steps", vocab: "letters" }],
+    ["name-interval", { view: "fretboard", intervals: ["m2", "M2"], labels: "steps", vocab: "letters" }],
+    ["ear-interval", { intervals: ["m2", "M2"], labels: "steps", vocab: "letters" }],
+    ["build-interval", { intervals: ["m2", "M2"], labels: "steps", vocab: "letters" }],
+    ["build-interval", { intervals: ["m2", "M2"], labels: "steps", vocab: "letters", instrument: "guitar", direction: "both" }],
+  ] as [string, Record<string, unknown>][]) {
+    for (const { said } of texts(kind, params)) assert.ok(!OCTAVE_NUMBER.test(said) && !ACCIDENTAL.test(said) && !INTERVAL_NAME.test(said), `${kind} letters: ${said}`);
+  }
+  // names: sharps and flats allowed, still no octave numbers or interval names.
+  for (const [kind, params] of [
+    ["build-interval", { intervals: ["m2", "M2"], labels: "steps", vocab: "names", direction: "both" }],
+    ["ear-find-note", { instrument: "guitar", vocab: "names" }],
+    ["ear-same-note", { vocab: "names" }],
+  ] as [string, Record<string, unknown>][]) {
+    for (const { said } of texts(kind, params)) assert.ok(!OCTAVE_NUMBER.test(said) && !INTERVAL_NAME.test(said), `${kind} names: ${said}`);
+  }
+  // The default is unchanged: full names with octave numbers.
+  assert.ok(texts("ear-higher-lower", {}).every(({ q }) => OCTAVE_NUMBER.test(q.explain)));
+});
+
+test("play-chord with show: diagram puts the chord box in front of the learner", () => {
+  for (const seed of SEEDS) {
+    for (const q of generateQuestions(decl("play-chord", { instrument: "guitar", chords: ["Em", "Am"], show: "diagram" }, 4), seed)) {
+      const box = q.stimuli.find((s) => s.type === "diagram");
+      assert.ok(box && box.type === "diagram" && ["Em", "Am"].includes(box.chord), JSON.stringify(q.stimuli));
+      assert.equal(q.expected.type, "chord-shape");
+      assert.equal(grade(q, rightAnswer(q)).correct, true);
+    }
+  }
+  // The same stimulus shape name-chord emits.
+  const named = generateQuestions(decl("name-chord", { view: "diagram", chords: ["Em", "Am"] }, 1), 1)[0].stimuli[0];
+  assert.deepEqual(Object.keys(named).sort(), ["chord", "type"]);
+});
+
+test("count-bar offers only note values the lesson uses; x/8 bars are described in eighths", () => {
+  for (const seed of SEEDS) {
+    for (const [time, values] of [["4/4", ["w", "h", "q"]], ["3/4", ["h", "q", "e"]], ["4/4", ["h", "q", "e", "hr", "qr"]]] as [string, string[]][]) {
+      for (const q of generateQuestions(decl("count-bar", { time, values }, 6), seed)) {
+        if (q.response.type !== "choice") throw new Error("choice expected");
+        for (const c of q.response.choices) assert.ok(!/^s/.test(c.id), `${time} ${values}: offered ${c.label}`);
+      }
+    }
+    for (const q of generateQuestions(decl("count-bar", { time: "6/8", values: ["q", "e", "q."] }, 4), seed)) assert.match(q.explain, /A bar of 6\/8 holds 6 eighth notes/);
+  }
+});
+
+test("a batch does not repeat a question while the parameters leave another", () => {
+  const sig = (x: Question) => JSON.stringify([x.prompt, x.stimuli, x.expected]);
+  for (const seed of SEEDS) {
+    const qs = generateQuestions(decl("name-note", { view: "tab", strings: [6, 5], maxFret: 3 }, 6), seed);
+    assert.equal(new Set(qs.map(sig)).size, qs.length, `seed ${seed}`);
+  }
+});
+
+test("a batch longer than the pool asks everything once before anything twice, evenly and never back to back", () => {
+  const sig = (x: Question) => JSON.stringify([x.prompt, x.stimuli, x.expected]);
+  // Four note values: a pool of 4.
+  for (const count of [6, 8, 11]) {
+    for (const seed of SEEDS) {
+      const qs = generateQuestions(decl("name-duration", { values: ["w", "h", "q", "e"], ask: "name" }, count), seed).map(sig);
+      assert.equal(qs.length, count);
+      for (let lap = 0; lap * 4 < count; lap++) {
+        const part = qs.slice(lap * 4, lap * 4 + 4);
+        assert.equal(new Set(part).size, part.length, `seed ${seed} count ${count} lap ${lap}`);
+      }
+      assert.ok(qs.every((q, i) => i === 0 || q !== qs[i - 1]), `seed ${seed}: back to back`);
+    }
+  }
+});
+
+test("wording: articles, chord roots and fretboard spellings", () => {
+  for (const seed of SEEDS) {
+    for (const q of generateQuestions(decl("name-interval", { view: "fretboard", intervals: ["m2", "M2"], labels: "steps" }, 6), seed)) assert.match(q.explain, /is a (half|whole) step:/);
+    for (const q of generateQuestions(decl("ear-chord", { types: ["min", "maj"] }, 6), seed)) assert.ok(!/minor chord on (G♭|D♭|A♭)\b|major chord on (A♯|D♯|C♯|G♯)/.test(q.explain), q.explain);
+    for (const q of generateQuestions(decl("name-interval", { view: "fretboard", intervals: ["m3", "M3", "P4", "P5", "m6", "M6"] }, 6), seed)) {
+      const m = /^([A-G][♯♭]?)(\d) to ([A-G][♯♭]?)(\d) is an? ([a-z ]+):/.exec(q.explain);
+      assert.ok(m, q.explain);
+      const fix = (x: string) => x.replace("♯", "#").replace("♭", "b");
+      assert.equal(intervalName(intervalText(intervalBetween(parsePitch(fix(m[1]) + m[2]), parsePitch(fix(m[3]) + m[4])))), m[5], q.explain);
+    }
+  }
+});
+
+test("positionsSpellChord: only seventh chords may drop the fifth", () => {
+  // C6 without its fifth is C–E–A, an A minor triad.
+  assert.equal(positionsSpellChord([{ string: 5, fret: 3 }, { string: 4, fret: 2 }, { string: 3, fret: 2 }], "C6"), false);
+  assert.equal(positionsSpellChord(shapePositions(GUITAR_SHAPES.C7), "C7"), true);
 });

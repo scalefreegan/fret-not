@@ -6,7 +6,7 @@ level: 3
 order: 2
 mirrors: core-3-triads
 concepts: [piano-triads]
-summary: Every triad is play-one-skip-one. Learn the three shapes that cover the common major and minor chords.
+summary: Every triad is play-one-skip-one. Learn the two shapes that cover the common major and minor chords.
 exercises:
   - kind: play-chord
     concept: piano-triads
@@ -33,14 +33,15 @@ exercises:
     chords: [C, Cm, D, Dm, E, Em, F, Fm, G, Gm, A, Am]
 ---
 
-On the keyboard a triad in root position always has the same feel: **play a key, skip a letter, play, skip a letter, play**. Root, third, fifth. What changes from chord to chord is whether the middle note is a white key or a black key.
+On the keyboard a triad in its basic position, with the root at the bottom (called **root position**), always has the same feel: **play a key, skip a letter, play, skip a letter, play**. Root, third, fifth. What changes from chord to chord is whether the middle note is a white key or a black key.
 
 ## Shape 1: all white
 
-Six triads use white keys only. Three are major and three are minor.
+Seven triads use white keys only. Three are major, three are minor, and one is diminished.
 
 - Major: **C** (C–E–G), **F** (F–A–C), **G** (G–B–D).
 - Minor: **Am** (A–C–E), **Dm** (D–F–A), **Em** (E–G–B).
+- Diminished: **B°** (B–D–F), the odd one out, which you will rarely play on its own.
 
 ```widget
 type: chord
@@ -48,7 +49,7 @@ symbol: C
 views: [keyboard, staff]
 ```
 
-Play all six in turn and listen for which are bright and which are dark.
+Play the three major and three minor ones in turn and listen for which are bright and which are dark. (B° is left out of the line: it sounds tense and unsettled, neither bright nor dark.)
 
 ```widget
 type: progression
@@ -104,7 +105,6 @@ Here is a chord sequence that uses both shapes. Watch which chords have a black 
 ```widget
 type: progression
 chords: "D G A D"
-key: D
 tempo: 84
 views: [keyboard]
 ```

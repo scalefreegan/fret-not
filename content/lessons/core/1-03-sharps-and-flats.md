@@ -15,7 +15,8 @@ exercises:
     accidentals: true
   - kind: build-interval
     concept: sharps-flats
-    title: One half step up
+    vocab: names
+    title: One half step up or down
     count: 5
     intervals: [m2]
     direction: both
@@ -64,7 +65,7 @@ Seven letters name the white keys. The five black keys in each octave get their 
 - A **sharp**, written ♯, raises a note by one half step.
 - A **flat**, written ♭, lowers a note by one half step.
 
-So the black key just above C is **C♯** ("C sharp"). Click the keys around the marked note below and watch its name change.
+So the black key just above C is **C♯** ("C sharp"). Press the keys around the marked note below and watch its name change.
 
 ```widget
 type: linked

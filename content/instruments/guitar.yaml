@@ -1,6 +1,6 @@
 title: Guitar
 layout: fretboard
-range: [E2, E6]
+range: [E2, C6]
 # Open strings from the lowest (string 6) to the highest (string 1).
 tuning: [E2, A2, D3, G3, B3, E4]
 frets: 20

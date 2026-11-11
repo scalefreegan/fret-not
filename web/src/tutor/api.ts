@@ -1,5 +1,5 @@
 import type {
-  ChatCommit, ChatDone, ChatError, ChatFixing, ChatHeartbeat, ChatHistoryReply, ChatProblems, ChatReply, ChatRequest, ChatStart, SettingsReply, SettingsRequest, TutorContext,
+  ChatCommit, ChatDone, ChatError, ChatFixing, ChatHeartbeat, ChatHistoryReply, ChatNote, ChatProblems, ChatReply, ChatRequest, ChatStart, SettingsReply, SettingsRequest, TutorContext,
 } from "../../shared/wire.ts";
 
 // The tutor's client calls. Kept beside the drawer rather than in a shared
@@ -32,6 +32,8 @@ export interface ChatHandlers {
   message?: (d: ChatReply) => void;
   fixing?: (d: ChatFixing) => void;
   problems?: (d: ChatProblems) => void;
+  /** Something the learner should know about the turn, sent before `commit`. */
+  note?: (d: ChatNote) => void;
   commit?: (d: ChatCommit) => void;
   error?: (d: ChatError) => void;
   done?: (d: ChatDone) => void;

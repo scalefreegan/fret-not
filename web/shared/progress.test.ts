@@ -3,14 +3,18 @@ import { test } from "node:test";
 import type { Concept, Content, Lesson, Level } from "./content.ts";
 import * as P from "./progress.ts";
 
-const T0 = new Date("2026-11-10T12:00:00.000Z");
+// Local noon, so the calendar-day rules read the same in any time zone.
+const T0 = new Date(2026, 10, 10, 12, 0, 0);
 const days = (n: number, from: Date = T0) => new Date(from.getTime() + n * 86_400_000);
+/** What dueAt holds for a review due `n` calendar days after `from`: the
+ *  start of that local day. */
+const dueOn = (n: number, from: Date = T0) => new Date(from.getFullYear(), from.getMonth(), from.getDate() + n).toISOString();
 const ans = (concept: string, ...correct: boolean[]): P.AnswerResult[] => correct.map((c) => ({ concept, correct: c }));
 const fresh = () => P.emptyProgress("default", T0);
 
 const level = (id: number, status: Level["status"] = "written"): Level => ({ id, title: `L${id}`, summary: "", status, topics: [] });
 const concept = (id: string, lvl: number, track = "core"): Concept => ({ id, title: id, level: lvl, track, requires: [] });
-const lesson = (id: string, lvl: number, concepts: string[]): Lesson => ({ id, title: id, track: "core", level: lvl, order: 1, concepts, summary: "", blocks: [], exercises: [], file: `${id}.md` });
+const lesson = (id: string, lvl: number, concepts: string[]): Lesson => ({ id, title: id, track: "core", level: lvl, order: 1, concepts, summary: "", blocks: [], exercises: concepts.map((c) => ({ kind: "quiz", concept: c, count: 1, params: {} })), file: `${id}.md` });
 
 const content: Pick<Content, "levels" | "concepts" | "lessons"> = {
   levels: [level(0), level(1), level(2), level(3, "outline")],
@@ -55,7 +59,7 @@ test("a concept enters review only at the threshold with enough attempts", () =>
   assert.equal(P.isMastered(p.concepts.a), false);
   p = P.recordAnswers(p, ans("a", true), T0);
   assert.equal(p.concepts.a.box, 1);
-  assert.equal(p.concepts.a.dueAt, days(P.REVIEW_INTERVAL_DAYS[0]).toISOString());
+  assert.equal(p.concepts.a.dueAt, dueOn(P.REVIEW_INTERVAL_DAYS[0]));
   assert.equal(P.isMastered(p.concepts.a), true);
 
   const weak = P.recordAnswers(fresh(), ans("b", true, false, true, false, false), T0);
@@ -69,11 +73,11 @@ test("a due review that is passed moves up a box with that box's interval", () =
   const t1 = days(1);
   p = P.recordAnswers(p, ans("a", true, true), t1);
   assert.equal(p.concepts.a.box, 2);
-  assert.equal(p.concepts.a.dueAt, days(P.REVIEW_INTERVAL_DAYS[1], t1).toISOString());
+  assert.equal(p.concepts.a.dueAt, dueOn(P.REVIEW_INTERVAL_DAYS[1], t1));
   const t2 = days(10);
   p = P.recordAnswers(p, ans("a", true), t2);
   assert.equal(p.concepts.a.box, 3);
-  assert.equal(p.concepts.a.dueAt, days(P.REVIEW_INTERVAL_DAYS[2], t2).toISOString());
+  assert.equal(p.concepts.a.dueAt, dueOn(P.REVIEW_INTERVAL_DAYS[2], t2));
 });
 
 test("the top box is a ceiling", () => {
@@ -84,7 +88,7 @@ test("the top box is a ceiling", () => {
     p = P.recordAnswers(p, ans("a", true), now);
   }
   assert.equal(p.concepts.a.box, P.REVIEW_INTERVAL_DAYS.length);
-  assert.equal(p.concepts.a.dueAt, days(P.REVIEW_INTERVAL_DAYS.at(-1)!, now).toISOString());
+  assert.equal(p.concepts.a.dueAt, dueOn(P.REVIEW_INTERVAL_DAYS.at(-1)!, now));
 });
 
 test("a due review that is failed moves down two boxes (not below 1) and is due tomorrow", () => {
@@ -98,14 +102,14 @@ test("a due review that is failed moves down two boxes (not below 1) and is due 
   now = days(100, now);
   p = P.recordAnswers(p, ans("a", true, false), now);
   assert.equal(p.concepts.a.box, 2);
-  assert.equal(p.concepts.a.dueAt, days(1, now).toISOString());
+  assert.equal(p.concepts.a.dueAt, dueOn(1, now));
   now = days(2, now);
   p = P.recordAnswers(p, ans("a", false), now);
   assert.equal(p.concepts.a.box, 1);
   now = days(2, now);
   p = P.recordAnswers(p, ans("a", false), now);
   assert.equal(p.concepts.a.box, 1, "never below 1");
-  assert.equal(p.concepts.a.dueAt, days(1, now).toISOString());
+  assert.equal(p.concepts.a.dueAt, dueOn(1, now));
   assert.equal(P.isMastered(p.concepts.a), true, "a failed review does not un-master");
 });
 
@@ -126,7 +130,7 @@ test("dueConcepts lists only due reviews, most overdue first", () => {
   p = P.recordAnswers(p, ans("d", true), T0); // still learning
   assert.deepEqual(P.dueConcepts(p, T0), []);
   assert.deepEqual(P.dueConcepts(p, days(1)), ["a"]);
-  assert.deepEqual(P.dueConcepts(p, days(2.5)), ["a", "c"]);
+  assert.deepEqual(P.dueConcepts(p, days(2.25)), ["a", "c"]);
   assert.deepEqual(P.dueConcepts(p, days(30)), ["a", "c", "b"]);
 });
 
@@ -135,10 +139,12 @@ test("levels unlock by mastery of the level before, by placement, and never when
   const unlocked = (q: P.Progress) => P.levelStatuses(content, q).map((s) => s.unlocked);
   assert.deepEqual(unlocked(p), [true, false, false, false]);
   p = master(p, "a", T0);
-  p = master(p, "b", T0);
   let st = P.levelStatuses(content, p);
-  assert.deepEqual([st[0].mastered, st[0].total], [2, 3], "total counts every track");
-  assert.deepEqual(unlocked(p), [true, false, false, false], "2 of 3 is under the unlock fraction");
+  assert.deepEqual([st[0].mastered, st[0].total], [1, 3], "total counts every track");
+  assert.deepEqual(unlocked(p), [true, false, false, false], "1 of 2 core concepts is under the unlock fraction");
+  assert.deepEqual([st[1].gate, st[1].gateMastered, st[1].gateTotal, st[1].gateTracks], [0, 1, 2, ["core"]]);
+  p = master(p, "b", T0);
+  assert.deepEqual(unlocked(p), [true, true, false, false], "the core is enough: the piano concept is optional");
   p = master(p, "c", T0);
   assert.deepEqual(unlocked(p), [true, true, false, false]);
   p = master(p, "d", T0);
@@ -151,9 +157,9 @@ test("levels unlock by mastery of the level before, by placement, and never when
   assert.deepEqual(st.map((s) => s.mastered), [3, 1, 0, 0]);
   assert.deepEqual(st.map((s) => s.level), [0, 1, 2, 3]);
 
-  // A level with no concepts cannot unlock the next.
+  // A level with no concepts asks nothing, so it does not hold the next shut.
   const hollow = { ...content, concepts: content.concepts.filter((c) => c.level !== 0) };
-  assert.deepEqual(P.levelStatuses(hollow, fresh()).map((s) => s.unlocked), [true, false, false, false]);
+  assert.deepEqual(P.levelStatuses(hollow, fresh()).map((s) => s.unlocked), [true, true, false, false]);
 });
 
 test("levelStatuses counts lessons done per level", () => {
@@ -196,7 +202,7 @@ test("applyPlacement puts earlier levels' concepts in review, due in a week, and
   const placed = P.applyPlacement(p, 1, content.concepts, now);
   assert.deepEqual(placed.concepts.a, before, "a concept already further along is left alone");
   assert.equal(placed.concepts.b.box, 2);
-  assert.equal(placed.concepts.b.dueAt, days(7, now).toISOString());
+  assert.equal(placed.concepts.b.dueAt, dueOn(7, now));
   assert.equal(placed.concepts.b.attempts, 0, "placement does not invent answers");
   assert.equal(P.isMastered(placed.concepts.b), true);
   assert.equal(placed.concepts.d, undefined, "the placed level itself is untouched");
@@ -224,4 +230,171 @@ test("nothing mutates its input", () => {
   P.levelStatuses(content, base);
   P.nextLesson(content, base);
   assert.deepEqual(base, snapshot);
+});
+
+test("a review is due by calendar day, not by the clock", () => {
+  // Mastered at 21:00; the next morning at 07:00 is "tomorrow", though only
+  // ten hours later.
+  const evening = new Date(2026, 10, 10, 21, 0, 0);
+  const p = master(fresh(), "a", evening);
+  assert.equal(p.concepts.a.dueAt, new Date(2026, 10, 11).toISOString());
+  assert.deepEqual(P.dueConcepts(p, new Date(2026, 10, 10, 23, 59)), []);
+  assert.deepEqual(P.dueConcepts(p, new Date(2026, 10, 11, 0, 0)), ["a"]);
+  assert.deepEqual(P.dueConcepts(p, new Date(2026, 10, 11, 7, 0)), ["a"]);
+  // And the morning review counts as the due review: up a box.
+  const q = P.recordAnswers(p, ans("a", true), new Date(2026, 10, 11, 7, 0));
+  assert.equal(q.concepts.a.box, 2);
+  // A file written under the old clock-time rule is read by its day too.
+  const legacy: P.Progress = { ...p, concepts: { a: { ...p.concepts.a, dueAt: new Date(2026, 10, 11, 21, 0).toISOString() } } };
+  assert.equal(P.isDue(legacy.concepts.a.dueAt, new Date(2026, 10, 11, 7, 0)), true);
+  assert.equal(P.isDue(legacy.concepts.a.dueAt, new Date(2026, 10, 10, 23, 0)), false);
+  assert.equal(P.isDue(null, T0), false);
+  assert.equal(P.isDue("not a date", T0), false);
+});
+
+test("dueConcepts leaves out concepts that cannot be reviewed when told which can", () => {
+  let p = master(fresh(), "a", T0);
+  p = master(p, "gone", T0); // since removed from the curriculum
+  p = master(p, "c", T0); // in the curriculum, but no exercise tests it
+  const withExercises: Pick<Content, "concepts" | "lessons"> = {
+    concepts: content.concepts,
+    lessons: [{ ...lesson("l0a", 0, ["a", "c"]), exercises: [{ kind: "quiz", concept: "a", count: 1, params: {} }, { kind: "quiz", concept: "not-a-concept", count: 1, params: {} }] }],
+  };
+  const known = P.reviewableConcepts(withExercises);
+  assert.deepEqual([...known], ["a"]);
+  assert.deepEqual(P.dueConcepts(p, days(1)), ["a", "c", "gone"], "the two-argument call is unchanged");
+  assert.deepEqual(P.dueConcepts(p, days(1), known), ["a"]);
+});
+
+test("a level with no concepts does not block the levels after it", () => {
+  const gap: Pick<Content, "levels" | "concepts" | "lessons"> = {
+    levels: [level(0), level(1), level(2), level(3)],
+    concepts: [concept("a", 0), concept("e", 2)],
+    lessons: [lesson("l0", 0, ["a"]), lesson("l2", 2, ["e"])],
+  };
+  const unlocked = (q: P.Progress) => P.levelStatuses(gap, q).map((s) => s.unlocked);
+  assert.deepEqual(unlocked(fresh()), [true, false, false, false], "level 0 not yet mastered: the empty level 1 does not open by itself");
+  const p = master(fresh(), "a", T0);
+  assert.deepEqual(unlocked(p), [true, true, true, false], "level 2 looks past the empty level 1 to level 0");
+  assert.deepEqual(unlocked(master(p, "e", T0)), [true, true, true, true]);
+  // Nothing before it has concepts at all: nothing to wait for.
+  assert.deepEqual(P.levelStatuses({ levels: [level(0), level(1)], concepts: [], lessons: [] }, fresh()).map((s) => s.unlocked), [true, true]);
+});
+
+test("a level whose concepts no lesson drills does not block, and each level names its gate", () => {
+  // Level 1 has a concept but no exercise tests it (an outline, or a level
+  // written before its drills): nobody could master it, so it gates nothing.
+  const c: Pick<Content, "levels" | "concepts" | "lessons"> = {
+    levels: [level(0), { ...level(1), status: "outline" }, level(2), level(3)],
+    concepts: [concept("a", 0), concept("x", 1), concept("e", 2)],
+    lessons: [lesson("l0", 0, ["a"]), lesson("l2", 2, ["e"])],
+  };
+  const st = (q: P.Progress) => P.levelStatuses(c, q);
+  assert.deepEqual(st(fresh()).map((s) => s.unlocked), [true, false, false, false]);
+  assert.deepEqual(st(fresh()).map((s) => s.gate), [null, 0, 0, 2], "levels 1 and 2 wait on level 0, level 3 on level 2");
+  const p = master(fresh(), "a", T0);
+  assert.deepEqual(st(p).map((s) => s.unlocked), [true, false, true, false], "the outline stays shut; level 2 opens past it");
+  assert.deepEqual([st(p)[2].gateMastered, st(p)[2].gateTotal], [1, 1]);
+  assert.deepEqual(st(master(p, "e", T0)).map((s) => s.unlocked), [true, false, true, true]);
+});
+
+test("ids that name Object built-ins read as absent and never crash", () => {
+  let p = P.recordAnswers(fresh(), [...ans("constructor", true, true, true, true), ...ans("toString", false), ...ans("__proto__", true)], T0);
+  assert.equal(Object.entries(p.concepts).find(([id]) => id === "constructor")?.[1].attempts, 4);
+  assert.equal(Object.hasOwn(p.concepts, "constructor"), true);
+  assert.equal(Object.hasOwn(p.concepts, "__proto__"), false, "__proto__ is never stored");
+  assert.equal(Object.getPrototypeOf(p.concepts), Object.prototype);
+  p = P.recordLesson(p, "__proto__", 1, T0);
+  assert.deepEqual(Object.keys(p.lessons), []);
+  const odd: Pick<Content, "levels" | "concepts" | "lessons"> = { levels: [level(0), level(1)], concepts: [concept("valueOf", 0)], lessons: [lesson("constructor", 0, ["valueOf"]), lesson("hasOwnProperty", 0, ["valueOf"])] };
+  const s = P.levelStatuses(odd, fresh());
+  assert.equal(s[0].mastered, 0);
+  assert.equal(s[0].lessonsDone, 0, "an inherited built-in is not a completed lesson");
+  assert.equal(P.nextLesson(odd, fresh())?.id, "constructor");
+  assert.equal(Object.entries(P.applyPlacement(fresh(), 1, odd.concepts, T0).concepts).find(([id]) => id === "valueOf")?.[1].box, 2);
+});
+
+// ---- the gate is counted over the tracks that suit the learner --------------
+
+const twoInstruments = (): Pick<Content, "levels" | "concepts" | "lessons" | "tracks"> => {
+  const concepts = [
+    ...["k1", "k2", "k3", "k4", "k5"].map((id) => concept(id, 0)),
+    ...["p1", "p2", "p3"].map((id) => concept(id, 0, "piano")),
+    ...["g1", "g2", "g3", "g4"].map((id) => concept(id, 0, "guitar")),
+    concept("n1", 1),
+    concept("n2", 1, "guitar"),
+    concept("z", 2),
+  ];
+  return {
+    tracks: [
+      { id: "core", title: "Core", summary: "" },
+      { id: "piano", title: "Piano", summary: "", instrument: "piano" },
+      { id: "guitar", title: "Guitar", summary: "", instrument: "guitar" },
+    ],
+    levels: [level(0), level(1), level(2)],
+    concepts,
+    lessons: [lesson("l0", 0, concepts.filter((c) => c.level === 0).map((c) => c.id)), lesson("l1", 1, ["n1", "n2"]), lesson("l2", 2, ["z"])],
+  };
+};
+const masterAll = (p: P.Progress, ids: string[]) => ids.reduce((q, id) => master(q, id, T0), p);
+
+test("a learner of one instrument is not held back by the other", () => {
+  const c = twoInstruments();
+  const open = (q: P.Progress) => P.levelStatuses(c, q).map((s) => s.unlocked);
+  // Everything but the guitar: 8 of 12 over all tracks is under 70%, but the
+  // learner is measured on core + piano (8 of 8).
+  let p = masterAll(fresh(), ["k1", "k2", "k3", "k4", "k5", "p1", "p2", "p3"]);
+  assert.deepEqual(open(p), [true, true, false]);
+  let st = P.levelStatuses(c, p);
+  assert.deepEqual([st[1].gateMastered, st[1].gateTotal, st[1].gateTracks], [8, 8, ["core", "piano"]]);
+  // The same for a guitar-only learner.
+  assert.deepEqual(open(masterAll(fresh(), ["k1", "k2", "k3", "k4", "g1", "g2", "g3"])), [true, true, false]);
+  // Core alone is enough, and a half-done instrument cannot count against it.
+  assert.deepEqual(open(masterAll(fresh(), ["k1", "k2", "k3", "k4"])), [true, true, false]);
+  assert.deepEqual(open(masterAll(fresh(), ["k1", "k2", "k3", "k4", "g1"])), [true, true, false]);
+  // An instrument can make up for a gap in the core…
+  p = masterAll(fresh(), ["k1", "k2", "k3", "p1", "p2", "p3"]);
+  assert.deepEqual(open(p), [true, true, false], "6 of 8 over core + piano");
+  // …but not replace it.
+  p = masterAll(fresh(), ["p1", "p2", "p3", "g1", "g2", "g3", "g4"]);
+  assert.deepEqual(open(p), [true, false, false]);
+  st = P.levelStatuses(c, p);
+  assert.deepEqual([st[1].gateMastered, st[1].gateTotal], [7, 12], "the text names the nearest way through: 2 more of all twelve");
+  // Without `tracks` (older callers), a track called "core" is the core.
+  const { tracks: _t, ...bare } = c;
+  assert.deepEqual(P.levelStatuses(bare, masterAll(fresh(), ["k1", "k2", "k3", "k4"])).map((s) => s.unlocked), [true, true, false]);
+});
+
+test("levels open in order: none is open above a locked one", () => {
+  const c = twoInstruments();
+  // Level 1's concepts mastered, level 0's not: before, level 2 opened while
+  // level 1 stayed shut.
+  const p = masterAll(fresh(), ["n1", "n2"]);
+  assert.deepEqual(P.levelStatuses(c, p).map((s) => s.unlocked), [true, false, false]);
+});
+
+test("a level that has been open stays open when the curriculum grows or a concept is lost", () => {
+  const c = twoInstruments();
+  let p = masterAll(fresh(), ["k1", "k2", "k3", "k4"]);
+  assert.equal(p.openedLevel, 0);
+  p = P.rememberOpened(c, p);
+  assert.equal(p.openedLevel, 1);
+  assert.equal(P.rememberOpened(c, p), p, "nothing new: the same object");
+  // The tutor adds two drilled core concepts to level 0: 4 of 7 is under 70%.
+  const grown = { ...c, concepts: [...c.concepts, concept("k6", 0), concept("k7", 0)], lessons: [...c.lessons, lesson("l0b", 0, ["k6", "k7"])] };
+  const st = P.levelStatuses(grown, p);
+  assert.deepEqual(st.map((s) => s.unlocked), [true, true, false], "level 1 stays open");
+  assert.deepEqual([st[1].gateMastered, st[1].gateTotal], [4, 7], "the counts still tell the truth");
+  // Without the record it would have re-locked.
+  assert.deepEqual(P.levelStatuses(grown, { ...p, openedLevel: 0 }).map((s) => s.unlocked), [true, false, false]);
+  // A file from before the field existed reads as 0 and gains it.
+  const { openedLevel: _o, ...old } = p;
+  assert.deepEqual(P.levelStatuses(c, old).map((s) => s.unlocked), [true, true, false]);
+  assert.equal(P.rememberOpened(c, old).openedLevel, 1);
+  // Placement counts as opening, and openedLevel never drops.
+  assert.equal(P.rememberOpened(c, P.applyPlacement(fresh(), 2, c.concepts, T0)).openedLevel, 2);
+  assert.equal(P.rememberOpened(grown, p).openedLevel, 1);
+  // An outline level is never opened by the record.
+  const outlined = { ...c, levels: [level(0), level(1), { ...level(2), status: "outline" as const }] };
+  assert.deepEqual(P.levelStatuses(outlined, { ...p, openedLevel: 2 }).map((s) => s.unlocked), [true, true, false]);
 });

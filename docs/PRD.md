@@ -34,8 +34,13 @@ final for v1):
 - **Track** — a sequence of levels on one subject. `core` (theory), `piano`,
   `guitar`. Instrument tracks mirror the core: each core concept that can be
   shown on an instrument has a counterpart lesson in that instrument's track.
-- **Level** — a stage of the path (0, 1, 2 …). Unlocks when the level before it
-  reaches a mastery threshold, or through the placement check.
+- **Level** — a stage of the path (0, 1, 2 …). Unlocks, in order, when the level before it
+  reaches a mastery threshold, or through the placement check. The threshold
+  is counted over the core track plus whichever instrument tracks leave the
+  fewest concepts to master, so following one instrument is enough. A level
+  with no concepts yet asks nothing: the level after it looks back past it.
+  A level that has opened stays open (`openedLevel` in the progress file),
+  even when the curriculum later gains a concept.
 - **Concept** — the unit of mastery ("the octave", "major triad", "notes on the
   low E string"). Lessons teach concepts; exercises test them; reviews resurface them.
 - **Lesson** — one markdown file: short prose interleaved with **widgets** and
@@ -65,7 +70,9 @@ final for v1):
    metronome, tap along), Sketchpad.
 6. The **Tutor** chat sits beside any lesson or lab page. Ask it why something
    is so, ask for another example, or ask it to write a new lesson or more
-   exercises on a concept. Its content edits are git commits.
+   exercises on a concept. It writes in a separate copy of the curriculum;
+   an edit the app accepts arrives as one git commit, and one it cannot
+   accept never arrives at all.
 7. A learner who already knows the basics takes the **placement check** and
    starts at a later level.
 
@@ -158,7 +165,8 @@ web/
   server/api.ts        plugins + wrap() same-origin guard
   server/loader.ts     load + validate content
   server/progress.ts   read and write data/profiles/<id>/
-  server/chat.ts       SSE tutor chat, validation loop, auto-commit of content/ edits
+  server/chat.ts       SSE tutor chat and its validation loop
+  server/turn.ts       the tutor's git worktree: when it may write, commit, fast-forward
   src/audio/           sample player, synth, scheduling on the audio clock
   src/widgets/         sound/ (string sim, harmonic mixer, scope …) and notation/
                        (engraver, keyboard, fretboard, tab, chord boxes, linked views)
@@ -174,10 +182,91 @@ macos/                 Dock app (Fret Not.app), copied from Lingo Dojo, port 386
 docs/                  this PRD; CONTENT.md (file-format contract); CONTENT-REFERENCE.md (generated)
 ```
 
-The tutor follows the Lingo Dojo rule: headless `claude -p` on the Claude Code
-login, Read on the repo, **Write/Edit only under `content/`**, every change
-auto-committed as `agent: <summary>`. It never grades exercises and never
-touches `web/`, `scripts/` or `data/`.
+The tutor is a headless `claude -p` on the Claude Code login. It never grades
+exercises, and it never writes into the working tree: not `web/`, `scripts/`
+or `data/`, and not `content/` either.
+
+How a tutor turn works (`web/server/chat.ts`, `web/server/turn.ts`):
+
+- **When it may write.** Only when `content/` is exactly the last commit:
+  nothing in it modified, staged, untracked or git-ignored (an ignored
+  `.DS_Store` excepted), no file there marked assume-unchanged or
+  skip-worktree, no symbolic link or `.git` entry in it, `HEAD` on a branch
+  that has at least one commit, and no merge, rebase, cherry-pick, revert or
+  bisect in progress. Uncommitted work outside `content/` does not matter.
+- **Otherwise the turn is read-only.** It runs in the repository with Read,
+  Glob and Grep only (no Write or Edit tool exists for it), answers
+  questions as usual, and the chat says once why it cannot write and what to
+  do: commit or stash the changes in `content/`.
+- **A writing turn runs in a git worktree**: a second checkout of the last
+  commit, in the system temp directory, outside the repository. The agent's
+  working directory is that checkout and its Write/Edit grant is that
+  checkout's `content/`. `docs/CONTENT.md` and `docs/CONTENT-REFERENCE.md`
+  are copied there from the live tree, so the agent writes for the loader
+  that is running. Because the agent's Read is confined to that checkout, it
+  sees the rest of the repository as of the last commit, not uncommitted
+  work.
+- **Validation.** After the turn the worktree's `content/` is loaded with the
+  running loader. A problem is: anything the loader newly refuses; a lesson
+  id or concept id that loaded before and is gone (progress is stored
+  against those ids); a changed file that is not `curriculum.yaml`,
+  `instruments/<name>.yaml` or `lessons/**.md`; one whose name or folder
+  starts with a dot; one git ignores; or one that is not a regular file.
+  Problems earn the agent one repair turn. (An id inside a file the loader
+  already refused at the last commit is unknown and so not protected.)
+- **If it is valid**, what changed under `content/` is committed in the
+  worktree as `agent: <summary>`, and the branch is fast-forwarded to that
+  commit with `git merge --ff-only`, but only if the repository is still on
+  the same branch at the same commit and `content/` is still clean. git
+  performs the fast-forward as one operation and refuses rather than
+  overwrite a file in the way. Staged and unstaged work outside `content/`
+  is not touched.
+- **If the fast-forward is not possible** (the owner saved or committed
+  something meanwhile), the commit is kept under `refs/tutor/<id>`, nothing
+  in the working tree changes, and the chat gives the commands to take it
+  (`git merge --ff-only <ref>` or `git cherry-pick <ref>`) or drop it.
+- **If it is not valid** after the repair turn, or the run failed, timed out
+  or was cancelled (including Stop pressed after the agent finished but
+  before the commit), or the commit itself failed, the worktree is deleted
+  and the chat says so. Nothing was written to the repository, so nothing is
+  undone and no copy of the attempt is kept.
+- **git hooks do not run and commits are not signed** for the tutor's git
+  calls (`core.hooksPath=/dev/null`, `commit.gpgsign=false`), so a hook
+  cannot refuse, stall or half-apply a turn. Each git call has a 60-second
+  timeout. Nothing is pushed.
+- **If the server stops mid-turn**: on a normal quit (SIGTERM, Ctrl-C) the
+  agent is killed and the worktree deleted before the process exits. After a
+  crash or a kill the worktree is left in the temp directory; any start or
+  turn more than 45 minutes later deletes it (by its path and age) and runs
+  `git worktree prune`. An agent orphaned by a killed server is not hunted
+  down: it can only write in that leftover directory, and stops by itself
+  at its turn limit. No process is ever looked up or killed by pid.
+- One turn at a time per server process (a second request gets 409). Two
+  copies of the app on one repository would each use their own worktree; the
+  second to finish cannot fast-forward and its commit is kept under a ref.
+- The transcript is passed to the CLI on stdin, and the part replayed is
+  bounded by bytes as well as by message count. `data/chat.jsonl` is trimmed
+  to its newest messages once it passes about 1 MB.
+
+Progress rules worth knowing (`web/shared/progress.ts`):
+
+- A review is due by local calendar day: mastering a concept at 21:00 makes
+  it due from midnight, not from 21:00 the next day.
+- `dueConcepts(progress, now, known)` counts only concepts that still exist
+  and have an exercise (`reviewableConcepts(content)`), so the review badge
+  cannot show something that can never be cleared.
+- A level opens when its **gate** has 80% of its reviewable concepts
+  mastered. The gate is the nearest earlier level that has any reviewable
+  concept; a level with none (empty, an outline, or not yet drilled) is
+  skipped. `levelStatuses` reports each level's `gate`.
+- `POST /api/progress/answers` always replies with `dropped` (how many
+  answers were not recorded because their concept id is not in the
+  curriculum), `lessonDropped` (the lesson completion was not recorded) and
+  `recovered`. Ids are only left unchecked while `curriculum.yaml` cannot be
+  loaded at all; then what is sent is recorded.
+- A progress file with a bad entry loses that entry, not everything: the
+  original is kept beside it as `progress.corrupt-<time>.json` and the reply
+  carries `recovered: true` and `recoveredTo`.
 
 ## Build choices made (2026-11-10)
 

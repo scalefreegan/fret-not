@@ -22,7 +22,19 @@ let analyser: AnalyserNode | null = null;
  *  until a user gesture; every play function resumes it. */
 export function audioContext(): AudioContext {
   if (!ctx) {
-    ctx = new AudioContext({ latencyHint: "interactive" });
+    const Ctor: typeof AudioContext | undefined = window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!Ctor) throw new Error("This browser has no Web Audio, so the app cannot make sound.");
+    ctx = new Ctor({ latencyHint: "interactive" });
+    // iPhone and iPad: by default the ring/silent switch mutes Web Audio as
+    // if it were a ringtone. Declaring the page a "playback" session (Safari
+    // 16.4+) makes it behave like a music app, which sounds with the switch
+    // on silent. Older iOS stays muted by the switch.
+    try {
+      const session = (navigator as unknown as { audioSession?: { type: string } }).audioSession;
+      if (session) session.type = "playback";
+    } catch {
+      /* not supported: nothing to do */
+    }
     master = ctx.createGain();
     master.gain.value = 0.9;
     // A limiter: stacked voices (a six-string chord, eight harmonics at full)
@@ -38,7 +50,9 @@ export function audioContext(): AudioContext {
     analyser.smoothingTimeConstant = 0.6;
     master.connect(limiter).connect(analyser).connect(ctx.destination);
   }
-  if (ctx.state === "suspended") void ctx.resume();
+  // "interrupted" is iOS's word for suspended by the system (a call, the
+  // page put in the background); it resumes the same way.
+  if (ctx.state !== "running" && ctx.state !== "closed") void ctx.resume().catch(() => {});
   return ctx;
 }
 
@@ -71,9 +85,40 @@ export function audioNow(): number {
 /** Fetch and decode the recordings for a sampled timbre ahead of first use.
  *  Resolves true when they are ready, false when the synth will stand in.
  *  Other timbres resolve true at once. */
-export function preload(timbre: Timbre): Promise<boolean> {
+export function preload(timbre: Timbre, opts: { eager?: boolean } = {}): Promise<boolean> {
   if (!isSampled(timbre)) return Promise.resolve(true);
-  return loadSamples(audioContext(), timbre);
+  try {
+    return loadSamples(decodeContext(), timbre, opts);
+  } catch {
+    return Promise.resolve(false); // no Web Audio at all
+  }
+}
+
+/** A context to decode recordings with. Before the first user gesture the
+ *  live context must not be created (browsers warn and keep it suspended),
+ *  so a throwaway offline one decodes instead; its buffers play in any context. */
+function decodeContext(): BaseAudioContext {
+  if (ctx) return ctx;
+  const Off = offlineCtor();
+  // No offline context (very old Safari had only a prefixed one, or none):
+  // decode with the live one, created a little early.
+  return Off ? new Off(1, 1, 44100) : audioContext();
+}
+function offlineCtor(): typeof OfflineAudioContext | undefined {
+  if (typeof window === "undefined") return undefined;
+  return window.OfflineAudioContext ?? (window as unknown as { webkitOfflineAudioContext?: typeof OfflineAudioContext }).webkitOfflineAudioContext;
+}
+
+let warmed = false;
+/** Fetch and decode both recorded instruments in the background, so that the
+ *  very first note of a session is already the recording and not the stand-in
+ *  synth. Safe to call before any user gesture and more than once. Runs by
+ *  itself once the page is idle (see the bottom of this file). */
+export function preloadSamples(opts: { eager?: boolean } = {}): void {
+  if (warmed && samplesReady("piano") && samplesReady("guitar")) return;
+  warmed = true;
+  void preload("piano", opts);
+  void preload("guitar", opts);
 }
 /** Whether a timbre is currently played from recordings. */
 export function usingSamples(timbre: Timbre): boolean {
@@ -104,7 +149,7 @@ const MAX_VOICES = 48;
 function spawn(midi: number, opts: NoteOptions, owner = 0): Voice {
   const ac = audioContext();
   const timbre = opts.timbre ?? "piano";
-  if (isSampled(timbre) && !samplesReady(timbre)) void loadSamples(ac, timbre);
+  if (isSampled(timbre) && !samplesReady(timbre)) void loadSamples(ac, timbre); // not there yet, or an earlier load failed: (re)try
   if (live.size >= MAX_VOICES) {
     const oldest = live.values().next().value;
     if (oldest) {
@@ -140,12 +185,20 @@ export function playChord(midis: number[], opts: NoteOptions & { strum?: number 
   [...midis].sort((a, b) => a - b).forEach((m, i) => spawn(m, { ...opts, velocity: (opts.velocity ?? 0.8) * each, delay: (opts.delay ?? 0) + i * (opts.strum ?? 0) }));
 }
 
-/** A short metronome tick. */
-export function playClick(opts: { accent?: boolean; delay?: number } = {}): void {
+/** A short metronome tick. The handle cancels it if it has not sounded yet
+ *  (ticks are put on the audio clock ahead of time, so whoever schedules a
+ *  run of them must cancel the rest when it stops). */
+export function playClick(opts: { accent?: boolean; delay?: number } = {}): { stop(): void } {
   const ac = audioContext();
   const entry: Live = { voice: null as unknown as Voice, owner: 0 };
   entry.voice = buildClick(ac, masterInput(), ac.currentTime + Math.max(0, opts.delay ?? 0), Boolean(opts.accent), () => live.delete(entry));
   live.add(entry);
+  return {
+    stop() {
+      if (!live.delete(entry)) return;
+      entry.voice.stop();
+    },
+  };
 }
 
 // --- music in time -----------------------------------------------------------
@@ -267,6 +320,7 @@ export function startMetronome(tempo: number, beatsPerBar: number, onBeat?: (bea
   const spb = 60 / tempo;
   const startTime = ac.currentTime + 0.1;
   const timers = new Set<number>();
+  const ahead = new Set<{ stop(): void }>(); // ticks scheduled but not yet sounded
   let n = 0;
   let stopped = false;
   const tick = () => {
@@ -275,9 +329,11 @@ export function startMetronome(tempo: number, beatsPerBar: number, onBeat?: (bea
       const t = startTime + n * spb;
       const beat = n % beatsPerBar;
       const bar = Math.floor(n / beatsPerBar);
-      if (!opts.silent) playClick({ accent: beat === 0, delay: Math.max(0, t - ac.currentTime) });
+      const click = opts.silent ? null : playClick({ accent: beat === 0, delay: Math.max(0, t - ac.currentTime) });
+      if (click) ahead.add(click);
       const id = window.setTimeout(() => {
         timers.delete(id);
+        if (click) ahead.delete(click);
         if (!stopped) onBeat?.(beat, bar, t);
       }, Math.max(0, (t - ac.currentTime) * 1000));
       timers.add(id);
@@ -296,6 +352,8 @@ export function startMetronome(tempo: number, beatsPerBar: number, onBeat?: (bea
       stopped = true;
       for (const id of timers) window.clearTimeout(id);
       timers.clear();
+      for (const c of ahead) c.stop();
+      ahead.clear();
     },
   };
 }
@@ -455,10 +513,51 @@ export function pluckPartials(fundamentalHz: number, amplitudes: readonly number
 export async function renderNote(midi: number, timbre: Timbre, seconds = 0.6): Promise<{ samples: Float32Array; sampleRate: number; sampled: boolean }> {
   // Decode with a throwaway context when the live one does not exist yet, so
   // drawing a spectrum on page load does not start audio before a user gesture.
-  const sampled = isSampled(timbre) ? await loadSamples(ctx ?? new OfflineAudioContext(1, 1, 44100), timbre) : false;
+  const sampled = isSampled(timbre) ? await loadSamples(decodeContext(), timbre) : false;
   const sampleRate = 44100;
-  const off = new OfflineAudioContext(1, Math.ceil(sampleRate * seconds), sampleRate);
+  const Off = offlineCtor();
+  if (!Off) throw new Error("This browser cannot render a sound to draw it.");
+  const off = new Off(1, Math.ceil(sampleRate * seconds), sampleRate);
   buildVoice(off, off.destination, { midi, timbre, t0: 0, duration: seconds, velocity: 0.8 });
   const buf = await off.startRendering();
   return { samples: buf.getChannelData(0), sampleRate, sampled };
+}
+
+// --- warm-up -----------------------------------------------------------------
+
+// Load the recordings as soon as the page is idle, without waiting for the
+// first note to ask for them. If that load failed (offline for a moment),
+// each later touch, click or key press tries again, at most once every
+// second and a half, until both instruments are in.
+//
+// The same gestures keep the audio context alive on phones and tablets. iOS
+// only lets sound start from inside a touch, click or key handler, and
+// suspends the context when the page goes to the background or a call comes
+// in; so every gesture resumes it if it is not running, and so does coming
+// back to the page (which works where the browser allows it, and is
+// otherwise picked up by the next touch).
+if (typeof window !== "undefined") {
+  const idle: (fn: () => void) => void = typeof window.requestIdleCallback === "function" ? (fn) => window.requestIdleCallback(fn, { timeout: 2000 }) : (fn) => window.setTimeout(fn, 400);
+  idle(() => preloadSamples());
+  const wake = () => {
+    if (ctx && ctx.state !== "running" && ctx.state !== "closed") void ctx.resume().catch(() => {});
+  };
+  // The context is CREATED here, inside the first real gesture, not by the
+  // first note: that note is often an exercise playing its own question from
+  // a timer, and iOS leaves a context made outside a gesture suspended until
+  // the next touch (the question would sound late, or not at all).
+  const onGesture = () => {
+    try {
+      audioContext();
+    } catch {
+      return; // no Web Audio in this browser
+    }
+    wake();
+    if (!samplesReady("piano") || !samplesReady("guitar")) preloadSamples({ eager: true });
+  };
+  for (const type of ["pointerdown", "pointerup", "touchend", "click", "keydown"]) window.addEventListener(type, onGesture, { capture: true, passive: true });
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") wake();
+  });
+  window.addEventListener("pageshow", wake);
 }

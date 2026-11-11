@@ -62,13 +62,21 @@ export type ResponseSpec =
 export type Expected =
   | { type: "choice"; id: string }
   /** `match: "exact"` compares MIDI numbers, `"pc"` ignores the octave.
-   *  `ordered` compares as a sequence, otherwise as a set. */
-  | { type: "notes"; midis: number[]; match: "exact" | "pc"; ordered: boolean }
+   *  `ordered` compares as a sequence, otherwise as a set.
+   *  `positions`: on the fretboard the answer must be played at exactly these
+   *  places (a tab names a string and a fret, not just a pitch).
+   *  `alsoAccept`: for a one-note answer, other MIDI notes that are equally
+   *  right (`midis` stays the one shown as the answer). */
+  | { type: "notes"; midis: number[]; match: "exact" | "pc"; ordered: boolean; positions?: FretPos[]; alsoAccept?: number[] }
   /** Guitar: the fretted positions must spell this chord (any voicing). */
   | { type: "chord-shape"; symbol: string }
   /** Onset times in quarter-note beats from the first beat after the
-   *  count-in; each tap must fall within `toleranceBeats` of its onset. */
-  | { type: "taps"; onsets: number[]; toleranceBeats: number };
+   *  count-in. Tap `i` must fall within `tolerances[i]` beats of `onsets[i]`:
+   *  each note's window is limited by its own nearest neighbour, so a pair of
+   *  sixteenths is tight and a half note in the same pattern is not.
+   *  `toleranceBeats` is the smallest of them, for a reader that wants one
+   *  number; when `tolerances` is absent it applies to every onset. */
+  | { type: "taps"; onsets: number[]; toleranceBeats: number; tolerances?: number[] };
 
 export type Given =
   | { type: "choice"; id: string }

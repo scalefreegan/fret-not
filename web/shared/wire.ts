@@ -1,6 +1,32 @@
 // Wire types for the tutor chat and its settings: what the server
-// (server/chat.ts) and the drawer (src/tutor/) exchange. The curriculum's
-// wire shape is shared/content.ts.
+// (server/chat.ts) and the drawer (src/tutor/) exchange — and the replies of
+// the progress routes. The curriculum's wire shape is shared/content.ts.
+
+import type { Progress } from "./progress.ts";
+
+/** GET /api/progress, POST /api/progress/placement and /reset. */
+export interface ProgressReply {
+  progress: Progress;
+  /** The stored file could not be used as it was (unreadable, or some entries
+   *  in it were bad and were dropped). The original is kept at `recoveredTo`. */
+  recovered?: boolean;
+  /** Absolute path of the kept original, when `recovered`. */
+  recoveredTo?: string;
+}
+
+/** POST /api/progress/answers. */
+export interface AnswersReply {
+  progress: Progress;
+  /** How many of the ANSWERS sent were not recorded: their concept id is not
+   *  in the curriculum on disk. The lesson completion is not counted here. */
+  dropped: number;
+  /** True when a lesson completion was sent and NOT recorded (no lesson with
+   *  that id is loaded right now). The answers may still have been saved. */
+  lessonDropped: boolean;
+  /** As in ProgressReply, but always stated. */
+  recovered: boolean;
+  recoveredTo?: string;
+}
 
 /** What the learner is looking at, sent with each message so the tutor can
  *  answer about it. */
@@ -79,7 +105,21 @@ export interface ChatProblems {
   ts: string;
 }
 
-/** SSE `commit`, after the reply: what the server did with content/. */
+/** SSE `note`: the server telling the learner something about the turn that
+ *  is neither a reply nor a refusal — that this turn cannot write (content/
+ *  has uncommitted work), or that its commit was kept under a ref instead of
+ *  applied. Also stored in the history as a `note`. */
+export interface ChatNote {
+  text: string;
+  ts: string;
+}
+
+/** SSE `commit`, after the reply: what reached the repository. `hash` — the
+ *  turn's commit is now the branch head and content/ shows it. `skipped` —
+ *  nothing reached it (nothing was written, the turn was read-only or
+ *  refused, or its commit is waiting under a ref: a `note` says which).
+ *  `error` — the change was valid but could not be committed, and was
+ *  discarded. */
 export type ChatCommit = { hash: string; summary: string } | { skipped: true } | { error: string };
 
 /** SSE `error` (the run failed; `error` is a sentence with a hint when the

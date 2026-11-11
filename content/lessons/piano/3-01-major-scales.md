@@ -99,7 +99,7 @@ labels: all
 
 > C major: no black keys. G major: F♯. D major: F♯ and C♯. F major: B♭.
 
-These match the key signatures exactly. A key signature is a list of which black keys the scale uses.
+These match the key signatures exactly: for these four scales, the key signature lists the very black keys the scale uses.
 
 ## Any tonic
 

@@ -75,7 +75,7 @@ tempo: 84
 
 ## The circle of fifths
 
-The twelve major keys form a tidy pattern. Click around this circle, starting from C at the top and going clockwise.
+The twelve major keys form a tidy pattern. Press the keys around this circle, starting from C at the top and going clockwise.
 
 ```widget
 type: circle-of-fifths

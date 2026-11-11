@@ -36,7 +36,7 @@ exercises:
 
 **Open chords** are chord shapes played in the first three frets that include at least one open string. They ring fully, they are the first chords every guitarist learns, and eight of them are enough for thousands of folk, pop and rock songs.
 
-Click each diagram to hear it.
+Press each diagram to hear it.
 
 ```widget
 type: chord-diagram
@@ -72,7 +72,7 @@ views: [fretboard, diagram]
 
 ## Major and minor are one finger apart
 
-In the last core lesson, the only difference between a major and a minor triad was the third, moved by one half step. One half step on the guitar is one fret, so the major and minor versions of a chord differ by **one fret on one string**.
+In the core lesson on triads, the only difference between a major and a minor triad was the third, moved by one half step. One half step on the guitar is one fret, so the major and minor versions of a chord differ by **one fret on one string**.
 
 Compare each pair:
 
@@ -94,7 +94,6 @@ Chords are played in sequences. This one uses G, D, Em and C, four shapes behind
 ```widget
 type: progression
 chords: "G D Em C"
-key: G
 tempo: 84
 instrument: guitar
 views: [diagram]
@@ -105,10 +104,9 @@ And a three-chord sequence with a folk and blues flavour:
 ```widget
 type: progression
 chords: "A D A E"
-key: A
 tempo: 92
 instrument: guitar
 views: [diagram]
 ```
 
-In the exercises you are given a chord symbol. Place a dot on each string you would fret, leave the open strings alone, and check. Use the diagrams above for reference until the shapes stick.
+In the exercises you are given a chord symbol. Mark one note on every string you would play: the fret your finger presses, or the open position to the left of the nut for a string that rings open. Leave out any string marked X, then check. Use the diagrams above for reference until the shapes stick.

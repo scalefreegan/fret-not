@@ -53,6 +53,10 @@
   --ivory-edge: #cfc4ae;
   --ebony: #24201b;
   --ebony-top: #3a342c;
+  /* Lettering printed on the keys (they stay ivory and ebony in both schemes). */
+  --ivory-ink: #8a7f6c;
+  --ivory-ink-soft: #a59a86;
+  --ebony-ink: #d8cfbd;
   --rosewood: #5a3626;
   --rosewood-dark: #3f2519;
   --fret-wire: #d9c9a0;
@@ -107,12 +111,19 @@
     --ivory-edge: #8f8672;
     --ebony: #100e0b;
     --ebony-top: #2b2620;
+    --ivory-ink: #776d5b;
+    --ivory-ink-soft: #8f8572;
+    --ebony-ink: #cfc6b3;
     --rosewood: #4a2c1f;
     --rosewood-dark: #2f1b12;
     --pc-l: 0.74;
     --pc-c: 0.15;
   }
 }
+
+/* A wide, short screen: a phone on its side. Keep in step with useShort()
+   in widgets/touch.ts. */
+@custom-variant short (@media (max-height: 500px) and (min-width: 640px));
 
 @theme inline {
   --color-ground: var(--ground);
@@ -149,6 +160,7 @@ html {
 body {
   margin: 0;
   min-height: 100vh;
+  min-height: 100dvh;
 }
 h1,
 h2,
@@ -166,6 +178,27 @@ button:disabled {
 :focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
+}
+
+/* Parts of a drawn instrument that take keyboard focus (a piano key, a fret,
+   a key on the circle of fifths, the staff you place notes on). The page-wide
+   outline does not follow SVG shapes well, so the shape itself is ringed.
+   (A piano key draws its own ring on top of the black keys: Keyboard.tsx.) */
+.kb-key:focus,
+.fb-cell:focus,
+.cof-key:focus,
+.staff-pick:focus {
+  outline: none;
+}
+.fb-cell:focus-visible > rect:first-child,
+.cof-key:focus-visible > circle:first-child {
+  stroke: var(--accent);
+  stroke-width: 2.5px;
+}
+.staff-pick:focus-visible {
+  stroke: var(--accent);
+  stroke-width: 2px;
+  stroke-dasharray: 5 4;
 }
 
 /* Music glyphs (SMuFL code points) drawn as SVG text. */
@@ -229,4 +262,43 @@ button:disabled {
     animation-duration: 0.001ms !important;
     transition-duration: 0.001ms !important;
   }
+}
+
+/* Drawn instruments under a finger: no text selection, no long-press
+   callout, no double-tap zoom, no grey tap flash. Panning stays allowed so
+   the page (and a wide instrument's own box) can still be scrolled from on
+   top of one. */
+.instrument {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: pan-x pan-y;
+}
+.instrument svg {
+  touch-action: pan-x pan-y;
+}
+/* An instrument wider than its box scrolls sideways inside it. */
+.instrument-scroll {
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+}
+.instrument-more {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 0.25rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--fg-3);
+}
+/* A surface that is dragged or tapped in time: the gesture is ours. */
+.touch-surface {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: none;
 }

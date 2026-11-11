@@ -1,8 +1,8 @@
 import type { ExerciseDecl } from "../content.ts";
 import type { Choice, Question, Sound, SoundEvent, Timbre } from "../exercise-types.ts";
 import { intervalName, semitones } from "../music/intervals.ts";
-import { fretMidi, openStringMidi, type FretPos } from "../music/instruments.ts";
-import { fromMidi, isBlackKey, isPitch, midiOf, pc, pcNameOf, pitchLabel, type Pitch } from "../music/notes.ts";
+import { fretMidi, GUITAR_FRETS, openStringMidi, type FretPos } from "../music/instruments.ts";
+import { fromMidi, isBlackKey, isPitch, midiOf, pc, pcLabel, pcNameOf, pitchLabel, toMidi, type Pitch } from "../music/notes.ts";
 import { parseDuration, parseTime, type Duration } from "../music/rhythm.ts";
 import { staffPosition, type Clef } from "../music/staff.ts";
 
@@ -190,6 +190,30 @@ export function midiLabel(midi: number, prefer: "sharp" | "flat" = "sharp"): str
   return pitchLabel(fromMidi(midi, prefer));
 }
 
+// --- vocabulary ---------------------------------------------------------------
+// An explanation may only use words the learner has met. The `vocab`
+// parameter of an exercise says how far the curriculum has got:
+//   plain    nothing yet: no note names, no half steps, no interval names
+//   letters  the seven letter names; a black key is described by where it is
+//   names    letters with sharps and flats, and half steps; no octave numbers
+//   full     everything (the default): octave numbers and interval names
+
+export type Vocab = "plain" | "letters" | "names" | "full";
+export const VOCABS: readonly Vocab[] = ["plain", "letters", "names", "full"];
+export function vocabOf(p: Params): Vocab {
+  const v = pStr(p, "vocab", "full");
+  return (VOCABS as readonly string[]).includes(v) ? (v as Vocab) : "full";
+}
+/** A note as the learner can be told it at this vocabulary: "C♯4", "C♯",
+ *  "the black key between C and D" (or the fretboard place), or "" at `plain`. */
+export function sayNote(pitch: Pitch, vocab: Vocab, where?: FretPos): string {
+  if (vocab === "full") return pitchLabel(pitch);
+  if (vocab === "names") return pcLabel(pitch);
+  if (vocab === "plain") return "";
+  if (pitch.acc === 0) return pcLabel(pitch);
+  return where ? `the note at ${posWhere(where)}` : keyWhere(toMidi(pitch));
+}
+
 // --- keyboard and fretboard helpers ----------------------------------------
 
 /** An on-screen keyboard range covering [lo, hi]: starts on the C or F at or
@@ -208,7 +232,7 @@ export const ALL_STRINGS = [6, 5, 4, 3, 2, 1];
 export function fretCandidates(strings: number[], maxFret: number, range: [number, number] | null, accidentals: boolean): FretPos[] {
   const valid = uniq(strings.filter((s) => Number.isInteger(s) && s >= 1 && s <= 6));
   const use = valid.length ? valid : ALL_STRINGS;
-  const top = Math.max(0, Math.min(24, Math.floor(maxFret)));
+  const top = Math.max(0, Math.min(GUITAR_FRETS, Math.floor(maxFret)));
   const all: FretPos[] = [];
   for (const string of use) for (let fret = 0; fret <= top; fret++) all.push({ string, fret });
   const natural = (x: FretPos) => accidentals || !isBlackKey(fretMidi(x));

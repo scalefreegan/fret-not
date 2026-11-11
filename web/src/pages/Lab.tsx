@@ -31,7 +31,7 @@ const TOOLS: Tool[] = [
     title: "Notes",
     blurb: "One note, everywhere it lives.",
     widgets: [
-      { type: "linked", params: { notes: ["C4"], views: ["staff", "keyboard", "fretboard", "tab"] }, note: "Click any key, fret or staff line. The same note lights up on every view." },
+      { type: "linked", params: { notes: ["C4"], views: ["staff", "keyboard", "fretboard", "tab"] }, note: "Press any key, fret or staff line. The same note lights up on every view." },
       { type: "interval", params: { from: "C4", to: "G4", views: ["staff", "keyboard"] } },
     ],
   },
@@ -76,12 +76,12 @@ export const LAB_TOOL_IDS = TOOLS.map((t) => t.id);
 export function LabPage({ tool }: { tool?: string }) {
   const current = TOOLS.find((t) => t.id === tool) ?? TOOLS[0];
   return (
-    <div className="mx-auto max-w-4xl px-5 pt-8 pb-24">
-      <h1 className="text-4xl font-bold text-fg">Lab</h1>
+    <div className="mx-auto max-w-4xl px-4 pt-6 pb-24 sm:px-5 sm:pt-8">
+      <h1 className="text-3xl font-bold text-fg sm:text-4xl">Lab</h1>
       <p className="mt-1 text-fg-2">Everything here is open and nothing is scored. Poke at it.</p>
-      <nav className="mt-5 flex flex-wrap gap-2" aria-label="Lab tools">
+      <nav className="mt-5 grid grid-cols-2 gap-2 sm:flex sm:flex-wrap" aria-label="Lab tools">
         {TOOLS.map((t) => (
-          <a key={t.id} href={href("lab", t.id)} aria-current={t.id === current.id ? "page" : undefined} className={cx("rounded-xl border-2 px-3.5 py-2 transition-colors", t.id === current.id ? "border-accent bg-accent-soft" : "border-line bg-panel hover:border-line-strong")}>
+          <a key={t.id} href={href("lab", t.id)} aria-current={t.id === current.id ? "page" : undefined} className={cx("rounded-xl border-2 px-3.5 py-2 transition-colors", t.id === current.id ? "border-accent bg-accent-soft" : "border-line bg-panel hover:border-line-strong active:border-line-strong")}>
             <span className="block font-display text-lg leading-tight font-bold text-fg">{t.title}</span>
             <span className="block text-sm text-fg-3">{t.blurb}</span>
           </a>

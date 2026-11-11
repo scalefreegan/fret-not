@@ -48,7 +48,7 @@ exercises:
 
 Five lines hold only nine notes. When a note is higher or lower than the staff, the staff is extended just for that note with a short extra line called a **ledger line**.
 
-Ledger lines continue the same pattern: line, space, line, space. Click these from left to right. They walk down off the bottom of the treble staff.
+Ledger lines continue the same pattern: line, space, line, space. Press these from left to right. They walk down off the bottom of the treble staff.
 
 ```widget
 type: staff
@@ -78,7 +78,7 @@ A is the top line, B sits above it, and C is on one ledger line above the staff.
 
 ## The grand staff
 
-Piano music uses both staffs at once, treble above bass, joined by a brace. This pair is the **grand staff**. Notes around middle C can be written in either staff. Click through these and watch the notes cross from the lower staff to the upper one at middle C.
+Piano music uses both staffs at once, treble above bass, joined by a brace. This pair is the **grand staff**. Notes around middle C can be written in either staff. Press these one after another and watch the notes cross from the lower staff to the upper one at middle C.
 
 ```widget
 type: staff
@@ -87,7 +87,7 @@ notes: [F3, G3, A3, B3, C4, D4, E4, F4, G4]
 labels: true
 ```
 
-Click keys below and above middle C on this keyboard and watch which staff each note lands on.
+Press keys below and above middle C on this keyboard and watch which staff each note lands on.
 
 ```widget
 type: linked

@@ -23,13 +23,24 @@ export function fretMidi(pos: FretPos, tuning: readonly number[] = STANDARD_TUNI
   return openStringMidi(pos.string, tuning) + pos.fret;
 }
 
+/** How many frets the app's guitar has: nothing is ever asked, drawn or
+ *  marked above this fret. This constant is the source of truth (the engine
+ *  runs in the browser and cannot read files); content/instruments/guitar.yaml
+ *  states the same number for readers, and the loader refuses the file if the
+ *  two disagree (so does the tuning, and the octave guitar music is written
+ *  up). To change the guitar, change it here and there together. */
+export const GUITAR_FRETS = 20;
+
 const POS_RE = /^([1-9])\/(\d{1,2})$/;
+/** A string/fret position that exists on the app's guitar: strings 1–6,
+ *  frets 0–GUITAR_FRETS. "7/3" and "1/25" are refused. */
 export function isFretPos(s: unknown): s is string {
-  return typeof s === "string" && POS_RE.test(s);
+  const m = typeof s === "string" ? POS_RE.exec(s) : null;
+  return !!m && Number(m[1]) >= 1 && Number(m[1]) <= STANDARD_TUNING.length && Number(m[2]) <= GUITAR_FRETS;
 }
 export function parseFretPos(s: string): FretPos {
   const m = POS_RE.exec(s);
-  if (!m) throw new Error(`not a fretboard position: "${s}" (expected string/fret, e.g. 6/3)`);
+  if (!m || !isFretPos(s)) throw new Error(`not a fretboard position: "${s}" (expected string/fret, e.g. 6/3, with strings 1–6 and frets 0–${GUITAR_FRETS})`);
   return { string: Number(m[1]), fret: Number(m[2]) };
 }
 export function fretPosText(p: FretPos): string {
@@ -96,7 +107,7 @@ export const GUITAR_SHAPES: Record<string, ChordShape> = {
   Em7: { frets: [0, 2, 0, 0, 0, 0], fingers: [0, 2, 0, 0, 0, 0] },
   Cmaj7: { frets: [null, 3, 2, 0, 0, 0], fingers: [0, 3, 2, 0, 0, 0] },
   Fmaj7: { frets: [null, null, 3, 2, 1, 0], fingers: [0, 0, 3, 2, 1, 0] },
-  Gmaj7: { frets: [3, 2, 0, 0, 0, 2], fingers: [2, 1, 0, 0, 0, 3] },
+  Gmaj7: { frets: [3, 2, 0, 0, 0, 2], fingers: [3, 2, 0, 0, 0, 1] },
   Dsus4: { frets: [null, null, 0, 2, 3, 3], fingers: [0, 0, 0, 1, 2, 3] },
   Asus4: { frets: [null, 0, 2, 2, 3, 0], fingers: [0, 0, 1, 2, 3, 0] },
   E5: { frets: [0, 2, 2, null, null, null], fingers: [0, 1, 2, 0, 0, 0] },
@@ -129,7 +140,10 @@ export function positionsSpellChord(positions: FretPos[], symbol: string): boole
   if (strings.size !== positions.length) return false;
   if (![...got].every((x) => want.has(x))) return false;
   const missing = [...want].filter((x) => !got.has(x));
-  return missing.length === 0 || (pcs.length >= 4 && missing.length === 1 && missing[0] === pcs[2]);
+  // Only a seventh chord with a perfect fifth may drop it. A sixth chord
+  // without its fifth is another chord (C–E–A is A minor).
+  const mayDropFifth = ["7", "maj7", "m7"].includes(parseChord(symbol).type);
+  return missing.length === 0 || (mayDropFifth && missing.length === 1 && missing[0] === pcs[2]);
 }
 
 // --- piano ----------------------------------------------------------------

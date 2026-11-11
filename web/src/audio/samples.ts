@@ -37,35 +37,60 @@ export function isSampled(t: string): t is SampledTimbre {
 type State = "idle" | "loading" | "ready" | "failed";
 const state: Record<SampledTimbre, State> = { piano: "idle", guitar: "idle" };
 const pending: Partial<Record<SampledTimbre, Promise<boolean>>> = {};
+const failedAt: Partial<Record<SampledTimbre, number>> = {};
 const buffers = new Map<string, AudioBuffer>();
+/** How long after a failed load before the next play may try again. */
+const RETRY_MS = 8000;
+/** A deliberate retry (the learner touched the page) may come sooner, but
+ *  still not on every tap. */
+const RETRY_GESTURE_MS = 1500;
+
+/** decodeAudioData, in both its forms: older Safari (iOS before 14.5) has
+ *  only the callback one and returns nothing. */
+function decode(ac: BaseAudioContext, data: ArrayBuffer): Promise<AudioBuffer> {
+  return new Promise((resolve, reject) => {
+    const p = ac.decodeAudioData(data, resolve, reject) as Promise<AudioBuffer> | undefined;
+    if (p && typeof p.then === "function") p.then(resolve, reject);
+  });
+}
 
 export function samplesReady(t: SampledTimbre): boolean {
   return state[t] === "ready";
 }
 
-/** Fetch and decode a set once. Resolves true when every file loaded; false
- *  (and the synth keeps standing in) when any failed. Never rejects. */
-export function loadSamples(ac: BaseAudioContext, t: SampledTimbre): Promise<boolean> {
+/** Fetch and decode a set. Resolves true when every file loaded; false (and
+ *  the synth keeps standing in) when any failed. Never rejects. A failure is
+ *  not final: files that did load are kept, and a later call (after a short
+ *  pause, so a dead network is not hammered on every note) fetches the rest. */
+export function loadSamples(ac: BaseAudioContext, t: SampledTimbre, opts: { eager?: boolean } = {}): Promise<boolean> {
+  if (state[t] === "ready") return Promise.resolve(true);
   if (pending[t]) return pending[t];
+  if (state[t] === "failed" && Date.now() - (failedAt[t] ?? 0) < (opts.eager ? RETRY_GESTURE_MS : RETRY_MS)) return Promise.resolve(false);
   state[t] = "loading";
   const run = Promise.all(
-    SAMPLE_SETS[t].map(async (s) => {
-      const res = await fetch(s.url);
-      if (!res.ok) throw new Error(`${s.url}: ${res.status}`);
-      buffers.set(s.url, await ac.decodeAudioData(await res.arrayBuffer()));
-    }),
+    SAMPLE_SETS[t]
+      .filter((s) => !buffers.has(s.url))
+      .map(async (s) => {
+        const res = await fetch(s.url);
+        if (!res.ok) throw new Error(`${s.url}: ${res.status}`);
+        buffers.set(s.url, await decode(ac, await res.arrayBuffer()));
+      }),
   ).then(
     () => {
       state[t] = "ready";
       return true;
     },
     (e) => {
-      console.warn(`[audio] ${t} samples unavailable, using the synth instead:`, e);
+      console.warn(`[audio] ${t} samples unavailable for now, using the synth instead:`, e);
       state[t] = "failed";
+      failedAt[t] = Date.now();
       return false;
     },
   );
   pending[t] = run;
+  void run.then(() => {
+    if (pending[t] === run) delete pending[t];
+  });
   return run;
 }
 

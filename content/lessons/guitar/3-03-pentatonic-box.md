@@ -11,7 +11,7 @@ exercises:
   - kind: play-scale
     concept: guitar-pentatonic
     title: E minor pentatonic
-    count: 3
+    count: 1
     instrument: guitar
     types: [minor-pentatonic]
     tonics: [E]

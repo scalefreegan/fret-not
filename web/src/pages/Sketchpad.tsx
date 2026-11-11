@@ -6,7 +6,7 @@ import { fromMidi, parsePitchClass, pc, pcLabel, pcOfClass, pitchName, toMidi, t
 import { parseDuration } from "../../shared/music/rhythm.ts";
 import { parseKey, scaleNotes } from "../../shared/music/scales.ts";
 import { playChord, playNote } from "../audio/index.ts";
-import { Button, Card, cx, pcColor, PlayButton, Segmented, Slider } from "../ui.tsx";
+import { Button, Card, cx, pcColor, PlayButton, Segmented, Slider, useCoarsePointer } from "../ui.tsx";
 import { keyboardRange, LinkedViews, type View } from "../widgets/notation/Linked.tsx";
 import { Score, type ScoreItem } from "../widgets/notation/Score.tsx";
 import { useTimedPlayback } from "../widgets/notation/Time.tsx";
@@ -190,17 +190,21 @@ export function SketchpadPage() {
   const playingBar = activeItem != null ? (items[activeItem].bar ?? 0) : null;
   const nowPitches = activeItem != null ? items[activeItem].pitches : [];
   const range = useMemo(() => keyboardRange(rows.map(toMidi)), [rows]);
-  const cell = 26;
+  // Finger-sized squares on a touch screen; the grid scrolls sideways in its
+  // own box and the note names stay pinned to its left edge.
+  const coarse = useCoarsePointer();
+  const cell = coarse ? 44 : 26;
+  const rowH = coarse ? 44 : 22;
 
   return (
-    <div className="mx-auto max-w-5xl px-5 pt-8 pb-24">
-      <h1 className="text-4xl font-bold text-fg">Sketchpad</h1>
-      <p className="mt-1 text-fg-2">Write a melody over chords. Pick a note length, then click the grid; click a note's first square to remove it. Every row is a note of the key, so nothing you click is "wrong".</p>
+    <div className="mx-auto max-w-5xl px-4 pt-6 pb-24 sm:px-5 sm:pt-8">
+      <h1 className="text-3xl font-bold text-fg sm:text-4xl">Sketchpad</h1>
+      <p className="mt-1 text-fg-2">Write a melody over chords. Pick a note length, then press a square in the grid; press a note's first square to remove it. Every row is a note of the key, so nothing you pick is "wrong".</p>
 
-      <Card className="mt-5 flex flex-wrap items-center gap-x-5 gap-y-3 px-4 py-3">
+      <Card className="mt-5 flex flex-wrap items-center gap-x-5 gap-y-3 px-3 py-3 sm:px-4">
         <PlayButton playing={playing} onClick={() => (playing ? stop() : play(sound, { timbre: "piano" }))} />
         <label className="flex items-center gap-1.5 text-sm font-medium text-fg-2">Key
-          <select value={sketch.key} onChange={(e) => setKey(e.target.value)} className="rounded-md border border-line bg-panel px-1.5 py-1 text-fg">
+          <select value={sketch.key} onChange={(e) => setKey(e.target.value)} className="rounded-md border border-line bg-panel px-1.5 py-1 text-base text-fg pointer-coarse:min-h-11">
             {KEYS.map((k) => <option key={k} value={k}>{pcLabel(parseKey(k).tonic)} {parseKey(k).mode}</option>)}
           </select>
         </label>
@@ -208,7 +212,7 @@ export function SketchpadPage() {
         <Slider className="min-w-48 flex-1" label="Tempo" value={sketch.tempo} min={50} max={180} onChange={(tempo) => setSketch({ ...sketch, tempo })} format={(v) => `${v} bpm`} />
       </Card>
 
-      <Card className="mt-4 px-4 py-4">
+      <Card className="mt-4 px-3 py-4 sm:px-4">
         <Score clef="treble" keySig={sketch.key} time="4/4" items={items} active={activeItem} tone="pc" onItemClick={(i) => items[i].pitches.length && playChord(items[i].pitches.map(toMidi), { timbre: "piano" })} />
       </Card>
 
@@ -217,7 +221,7 @@ export function SketchpadPage() {
           <span className="text-sm font-medium text-fg-2">Note length</span>
           <Segmented label="Note length" value={String(len)} onChange={(v) => setLen(Number(v))} options={LENGTHS.map((l) => ({ value: String(l.len), label: l.label }))} />
         </div>
-        <div className="overflow-x-auto pb-1">
+        <div className="overflow-x-auto overscroll-x-contain pb-1">
           <div style={{ width: 44 + totalSteps * cell + (sketch.bars - 1) * 6 }}>
             {/* Chord per bar. */}
             <div className="mb-2 flex" style={{ paddingLeft: 44 }}>
@@ -234,7 +238,7 @@ export function SketchpadPage() {
                         const picked = chordOf(e.target.value);
                         if (picked) playChord(pianoVoicing(chordSymbol(picked)), { timbre: "piano" });
                       }}
-                      className={cx("w-full rounded-lg border-2 bg-panel px-2 py-1.5 font-display text-lg font-bold text-fg", playingBar === bar ? "border-accent" : "border-line")}
+                      className={cx("w-full rounded-lg border-2 bg-panel px-2 py-1.5 font-display text-lg font-bold text-fg pointer-coarse:min-h-11", playingBar === bar ? "border-accent" : "border-line")}
                       style={c ? { boxShadow: `inset 5px 0 0 ${pcColor(pcOfClass(c.root))}` } : undefined}
                     >
                       <option value="">— no chord</option>
@@ -250,7 +254,7 @@ export function SketchpadPage() {
               const isTonic = pc(midi) === tonicPc;
               return (
                 <div key={midi} className="flex items-center">
-                  <button type="button" onClick={() => playNote(midi, { timbre: "piano" })} className="flex shrink-0 items-center justify-center rounded-l-md text-xs font-bold" style={{ width: 40, height: 22, background: pcColor(midi), color: "var(--pc-ink)", marginRight: 4 }}>
+                  <button type="button" onClick={() => playNote(midi, { timbre: "piano" })} className="sticky left-0 z-10 flex shrink-0 items-center justify-center rounded-l-md text-xs font-bold shadow-[4px_0_0_var(--panel)]" style={{ width: 40, height: rowH, background: pcColor(midi), color: "var(--pc-ink)", marginRight: 4 }}>
                     {pcLabel(p)}{isTonic ? p.oct : ""}
                   </button>
                   {Array.from({ length: totalSteps }, (_, step) => {
@@ -264,10 +268,10 @@ export function SketchpadPage() {
                         type="button"
                         aria-label={`${pcLabel(p)}${p.oct}, bar ${Math.floor(step / STEPS) + 1}, step ${(step % STEPS) + 1}${note ? " (note)" : ""}`}
                         onClick={() => (note && !isStart ? clickCell(note.start, midi) : clickCell(step, midi))}
-                        className={cx("shrink-0", !note && "hover:brightness-90")}
+                        className={cx("shrink-0 touch-manipulation", !note && "hover:brightness-90 active:brightness-90")}
                         style={{
                           width: cell,
-                          height: 22,
+                          height: rowH,
                           marginRight: step % STEPS === STEPS - 1 ? 6 : 0,
                           background: note ? pcColor(midi) : isTonic ? "var(--raised)" : "var(--panel)",
                           borderTop: "1px solid var(--line)",
@@ -295,8 +299,8 @@ export function SketchpadPage() {
         <div className="mb-3 flex flex-wrap items-center gap-3">
           <span className="text-sm font-medium text-fg-2">Follow along on</span>
           {(["keyboard", "fretboard"] as View[]).map((v) => (
-            <label key={v} className="flex items-center gap-1.5 text-sm text-fg-2">
-              <input type="checkbox" className="accent-(--accent)" checked={views.includes(v)} onChange={(e) => setViews(e.target.checked ? [...views, v] : views.filter((x) => x !== v))} /> {v}
+            <label key={v} className="flex items-center gap-1.5 text-sm text-fg-2 pointer-coarse:min-h-11 pointer-coarse:gap-2 pointer-coarse:text-base">
+              <input type="checkbox" className="accent-(--accent) pointer-coarse:size-5" checked={views.includes(v)} onChange={(e) => setViews(e.target.checked ? [...views, v] : views.filter((x) => x !== v))} /> {v}
             </label>
           ))}
         </div>
@@ -306,10 +310,15 @@ export function SketchpadPage() {
       <div className="mt-4 flex flex-wrap items-center gap-3">
         <Button
           onClick={() => {
-            void navigator.clipboard.writeText(toTokens(items)).then(() => {
-              setCopied(true);
-              window.setTimeout(() => setCopied(false), 1600);
-            });
+            // The clipboard is missing on an insecure origin (a phone reaching
+            // the app over plain http): fail quietly rather than throw.
+            void navigator.clipboard?.writeText(toTokens(items)).then(
+              () => {
+                setCopied(true);
+                window.setTimeout(() => setCopied(false), 1600);
+              },
+              () => undefined,
+            );
           }}
         >
           {copied ? "Copied" : "Copy as melody text"}

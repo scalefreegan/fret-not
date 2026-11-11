@@ -22,12 +22,18 @@ list under "Content problems".
 ## curriculum.yaml
 
 - **tracks** — `id`, `title`, `summary`, and for an instrument track
-  `instrument:` (a file in `instruments/`). `core` is the theory track.
+  `instrument:` (a file in `instruments/`). `core` is the theory track. A
+  track id may be used once.
 - **levels** — `id` (0, 1, 2 …), `title`, `summary`. `status: outline` marks a
-  level that has no lessons yet and lists its `topics`.
+  level that has no lessons yet and lists its `topics`. A level id may be
+  used once.
 - **concepts** — the unit mastery is tracked on. `id` (lowercase-with-dashes),
-  `title`, `level`, `track` (default `core`), `requires` (concept ids that
-  should come first).
+  `title`, `level`, `track` (default `core`), `requires` (a **list** of
+  concept ids that should come first: `requires: [pitch]`, never
+  `requires: pitch`).
+
+An id (track, concept, lesson) is lowercase letters, digits and dashes, and
+may not be `constructor`.
 
 A concept is small enough to test directly: "the octave", "notes on the low E
 and A strings". Add a concept before writing the lesson that teaches it.
@@ -79,7 +85,7 @@ Frontmatter:
 | `id` | Unique, lowercase-with-dashes. Convention: `<track>-<level>-<slug>`. Never change an id once the lesson is live: progress is stored against it. |
 | `title` | Short. |
 | `track`, `level` | Must exist in `curriculum.yaml`. |
-| `order` | Number. Lessons in a level run core first, then piano, then guitar, each by `order`. |
+| `order` | A finite number. Lessons in a level run core first, then piano, then guitar, each by `order`. |
 | `concepts` | Concept ids this lesson teaches (at least one). |
 | `summary` | One sentence, shown on the path. |
 | `mirrors` | Optional, on instrument lessons: the id of the core lesson this is the counterpart of. |
@@ -94,7 +100,20 @@ box). Not supported: images, tables, links, raw HTML. If something needs a
 picture, it needs a widget.
 
 A widget is a fenced block with the info string `widget` containing YAML: a
-`type` from the registry plus that widget's parameters.
+`type` from the registry plus that widget's parameters. The fence is exactly
+three backticks at the start of a line: the opening line is ```` ```widget ````
+and nothing else, the closing line is ```` ``` ````. Any other spelling
+(indented, `~~~widget`, four backticks, `Widget`, a space before the word, or
+anything after it) would be shown to the learner as code, so the loader
+refuses the lesson and says which line. To *show* a widget block as text
+without it becoming a widget, put it inside a longer fence with another info
+string (```` ````markdown ````). An HTML comment does not hide a widget block;
+the loader refuses one inside a comment. Every code fence must be closed: the
+loader refuses a lesson with a code block that never ends, or with a widget
+block that starts inside a plain three-backtick block, because either would
+show the widgets after it as code.
+
+The frontmatter ends at the first line that is `---` and nothing else.
 
 ### Writing lessons that work
 
@@ -103,6 +122,9 @@ A widget is a fenced block with the info string `widget` containing YAML: a
 - **Show before telling.** Put the widget right after the sentence that sets up
   what to try in it, and follow it with what the learner should have noticed.
   Tell the learner what to *do* in each widget ("drag the slider up slowly").
+- **Say "press", not "click" or "tap".** The app is used with a mouse and
+  on a phone; "press a key", "press each note" and "drag the slider" are true
+  on both.
 - **Write for an adult beginner** with no music background: plain words, every
   term defined the first time it appears, no assumed knowledge beyond earlier
   lessons. Do not talk down.
@@ -136,7 +158,11 @@ Questions are **generated and graded by the app's music engine**
 (`web/shared/exercises.ts`), with fresh random questions each run. The only
 kind with authored answers is `quiz`, for ideas no generator covers; its
 `answer` is the 1-based index of the correct choice and is checked by the
-loader. Give every quiz question an `explain`.
+loader. Give every quiz question an `explain`. **Quote any choice that
+contains a comma**: in `choices: [One fret, then two, Two frets]` YAML sees
+three choices, not two. The loader refuses a question in which two choices
+read the same, which is how this mistake usually shows. Capitals count: `I`
+and `i` are different choices.
 
 Aim for two to four exercises per lesson, mixing groups (identify, ear, play,
 build) where the concept allows, and make sure every concept the lesson lists
@@ -173,8 +199,9 @@ spells its chord).
 
 1. `content/instruments/<id>.yaml`: `title`, `layout` (`keyboard` or
    `fretboard`), `range`, `timbre`, and for fretted instruments `tuning`
-   (lowest string first) and `frets`; `writtenOffset` if its notation is
-   transposed.
+   (lowest string first, at least one) and `frets` (a whole number, 1 to
+   36); `writtenOffset` (whole semitones) if its notation is transposed.
+   `range` is `[lowest, highest]`, in that order.
 2. A track in `curriculum.yaml` with `instrument: <id>`, plus its concepts.
 3. Lessons under `content/lessons/<id>/`.
 4. If the layout is new (not a keyboard or a fretboard), a renderer in

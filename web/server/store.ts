@@ -9,7 +9,8 @@ import { REPO_ROOT } from "./loader.ts";
 // call — the app is single-user and these are tiny, so a cache would only
 // add a way for the file and the process to disagree.
 //
-//   data/chat.jsonl      one {role, text, ts} per line, appended per message
+//   data/chat.jsonl      one {role, text, ts} per line, appended per message;
+//                        trimmed to its newest messages when it grows large
 //   data/settings.json   {model}
 
 /** FRET_DATA_DIR when set (resolved against the repo root, like the content
@@ -24,6 +25,18 @@ const historyPath = () => path.join(dataDir(), "chat.jsonl");
 const settingsPath = () => path.join(dataDir(), "settings.json");
 
 const ROLES = new Set(["user", "assistant", "commit", "note"]);
+
+/** The transcript is a convenience, not a record: past this size the oldest
+ *  messages are dropped, keeping the newest HISTORY_KEEP_BYTES worth. */
+export const HISTORY_MAX_BYTES = 1_000_000;
+export const HISTORY_KEEP_BYTES = 500_000;
+
+/** Write whole, then rename: a crash mid-write leaves the old file. */
+function writeAtomic(file: string, text: string): void {
+  const tmp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, text);
+  fs.renameSync(tmp, file);
+}
 
 export function readHistory(): ChatMessage[] {
   let text: string;
@@ -50,9 +63,18 @@ export function readHistory(): ChatMessage[] {
   return out;
 }
 
-export function appendHistory(message: ChatMessage): void {
+export function appendHistory(message: ChatMessage, { maxBytes = HISTORY_MAX_BYTES, keepBytes = HISTORY_KEEP_BYTES } = {}): void {
   fs.mkdirSync(dataDir(), { recursive: true });
-  fs.appendFileSync(historyPath(), `${JSON.stringify(message)}\n`);
+  const file = historyPath();
+  fs.appendFileSync(file, `${JSON.stringify(message)}\n`);
+  if (fs.statSync(file).size <= maxBytes) return;
+  // Too big: keep the newest lines that fit in keepBytes (always at least
+  // the one just written).
+  const lines = readHistory().map((m) => `${JSON.stringify(m)}\n`);
+  let size = 0;
+  let from = lines.length;
+  while (from > 0 && (from === lines.length || size + Buffer.byteLength(lines[from - 1]) <= keepBytes)) size += Buffer.byteLength(lines[--from]);
+  writeAtomic(file, lines.slice(from).join(""));
 }
 
 export function clearHistory(): void {
@@ -86,6 +108,6 @@ export function setModel(model: string): string {
   } catch {
     /* no file yet, or unreadable: start fresh */
   }
-  fs.writeFileSync(settingsPath(), `${JSON.stringify({ ...existing, model }, null, 2)}\n`);
+  writeAtomic(settingsPath(), `${JSON.stringify({ ...existing, model }, null, 2)}\n`);
   return model;
 }

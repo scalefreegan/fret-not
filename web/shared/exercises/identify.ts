@@ -1,14 +1,14 @@
 import type { Choice, Stimulus } from "../exercise-types.ts";
-import { CHORDS, chordFullName, chordNotes, chordSymbol, parseChord, type ChordRef } from "../music/chords.ts";
-import { fretMidi, GUITAR_SHAPES, pianoVoicing, shapeMidis } from "../music/instruments.ts";
-import { intervalName, isInterval, semitones, SIMPLE_INTERVALS, transpose } from "../music/intervals.ts";
-import { LETTERS, accSymbol, fromMidi, isPitchClass, parsePitchClass, pc, pcBothLabels, pcLabel, pcName, pcNameOf, pcOfClass, pitchLabel, pitchName, toMidi, type Pitch } from "../music/notes.ts";
-import { parseDuration } from "../music/rhythm.ts";
+import { CHORDS, CHORD_ORDER, chordFullName, chordNotes, chordPcs, chordSymbol, parseChord, type ChordRef } from "../music/chords.ts";
+import { fretMidi, GUITAR_FRETS, GUITAR_SHAPES, pianoVoicing, shapeMidis } from "../music/instruments.ts";
+import { intervalFormalName, intervalName, intervalNumberName, isInterval, parseInterval, semitones, SIMPLE_INTERVALS, transpose } from "../music/intervals.ts";
+import { LETTERS, accSymbol, diatonicIndex, fromMidi, isBlackKey, letterAt, isPitchClass, parsePitchClass, pc, pcBothLabels, pcLabel, pcName, pcNameOf, pcOfClass, pitchLabel, pitchName, toMidi, type Pitch } from "../music/notes.ts";
+import { parseDuration, parseTime } from "../music/rhythm.ts";
 import { keyOfSignature, keySignature, parseKey, scaleNotes } from "../music/scales.ts";
 import type { Clef } from "../music/staff.ts";
 import {
   ALL_STRINGS, arpThenChord, barBeatsOf, beatsLabel, cap, choice, durationTokens, durationWords, fillBar, fretCandidates, int, intervalLabel, joinAnd, kbRange, keyWhere, melodic, midiCandidates,
-  ordinal, pBool, pList, pNum, pRange, pStr, pick, plural, posWhere, shuffle, sound, ev, staffWhere, stepWords, aStep, uniq, window5, type Body, type Generator, type Params, type Rng,
+  ordinal, pBool, pList, pNum, pRange, pStr, pick, plural, posWhere, sayNote, shuffle, sound, ev, staffWhere, aStep, uniq, vocabOf, window5, type Body, type Generator, type Params, type Rng, type Vocab,
 } from "./util.ts";
 
 const clefOf = (p: Params): Clef => (pStr(p, "clef", "treble") === "bass" ? "bass" : "treble");
@@ -93,7 +93,7 @@ export const nameNote: Generator = (p, rng) => {
   const pos = pick(rng, fretCandidates(pList(p, "strings", ALL_STRINGS), maxFret, pRange(p), accidentals));
   const midi = fretMidi(pos);
   const black = pcBothLabels(midi).includes("/");
-  const stimulus: Stimulus = view === "tab" ? { type: "tab", positions: [pos] } : { type: "fretboard", maxFret: Math.max(3, Math.min(24, Math.floor(maxFret))), marked: [pos] };
+  const stimulus: Stimulus = view === "tab" ? { type: "tab", positions: [pos] } : { type: "fretboard", maxFret: Math.max(3, Math.min(GUITAR_FRETS, Math.floor(maxFret))), marked: [pos] };
   const open = fretMidi({ string: pos.string, fret: 0 });
   return {
     prompt: view === "tab" ? "Name the note this tab asks for." : "Name the marked note.",
@@ -122,7 +122,92 @@ export function intervalChoices(rng: Rng, pool: string[], correct: string, label
     const near = [...SIMPLE_INTERVALS].filter((iv) => semitones(iv) !== semitones(correct)).sort((a, b) => Math.abs(semitones(a) - semitones(correct)) - Math.abs(semitones(b) - semitones(correct)));
     offered = [correct, ...near.slice(0, 2)].sort((a, b) => semitones(a) - semitones(b));
   }
-  return window5(rng, offered, offered.indexOf(correct)).map((iv) => choice(iv, intervalLabel(iv, labels)));
+  const shown = window5(rng, offered, offered.indexOf(correct));
+  // Two intervals of the same size share a label ("3 half steps"; "tritone"
+  // for both A4 and d5). Counted in steps they are the same answer, so only
+  // one is offered; by name they are different answers (four letters or
+  // five), so each gets its formal name.
+  if (labels === "steps") {
+    const kept = shown.filter((iv) => iv === correct || (semitones(iv) !== semitones(correct) && shown.find((x) => semitones(x) === semitones(iv)) === iv));
+    return kept.map((iv) => choice(iv, intervalLabel(iv, labels)));
+  }
+  const clash = (iv: string) => shown.some((x) => x !== iv && intervalLabel(x, labels) === intervalLabel(iv, labels));
+  return shown.map((iv) => choice(iv, clash(iv) ? cap(intervalFormalName(iv)) : intervalLabel(iv, labels)));
+}
+
+// --- intervals by number only (`labels: numbers`) -----------------------------
+// For the lesson that teaches counting letter names before qualities exist.
+// Both notes are natural, so the number can be counted from what is shown, and
+// answers are "Second", "Third" …: a major and a minor third are one choice.
+
+/** The interval numbers a declaration draws from, smallest first. */
+export function numberPool(p: Params): number[] {
+  const nums = uniq(pList<unknown>(p, "intervals", ["M2", "M3"]).filter(isInterval).map((iv) => parseInterval(iv).num)).filter((n) => n >= 1 && n <= 15);
+  return (nums.length ? nums : [2, 3]).sort((a, b) => a - b);
+}
+export function numberChoices(rng: Rng, pool: number[], correct: number): Choice[] {
+  let offered = pool;
+  if (offered.length < 2) offered = uniq([correct, correct + 1, correct > 1 ? correct - 1 : correct + 2]).sort((a, b) => a - b);
+  return window5(rng, offered, offered.indexOf(correct)).map((n) => choice(String(n), cap(intervalNumberName(n))));
+}
+/** The natural note `num` letter names from a natural note, counting both ends. */
+export function naturalAt(start: Pitch, num: number, dir: 1 | -1 = 1): Pitch {
+  return { ...letterAt(diatonicIndex(start) + dir * (num - 1)), acc: 0 };
+}
+/** "a third", "an octave". */
+export function aNumber(num: number): string {
+  const w = intervalNumberName(num);
+  return `${/^[aeiou]/.test(w) ? "an" : "a"} ${w}`;
+}
+/** Why two natural notes are that number apart: the letters, counted. */
+export function numberWhy(from: Pitch, to: Pitch, num: number): string {
+  const dir = diatonicIndex(to) >= diatonicIndex(from) ? 1 : -1;
+  const letters = Array.from({ length: Math.min(num, 15) }, (_, i) => letterAt(diatonicIndex(from) + dir * i).letter).join(" ");
+  return `${pitchLabel(from)} ${num === 1 ? "to" : dir > 0 ? "up to" : "down to"} ${pitchLabel(to)} is ${aNumber(num)}: ${plural(num, "letter name")} counting both ends (${letters}).`;
+}
+
+function nameIntervalNumber(p: Params, rng: Rng, view: string): Body {
+  const pool = numberPool(p);
+  const fretboard = view === "fretboard";
+  const usable = fretboard ? pool.filter((n) => n <= 8) : pool;
+  const nums = usable.length ? usable : [2, 3];
+  const num = pick(rng, nums);
+  const clef = clefOf(p);
+  let lo: Pitch;
+  let stimulus: Stimulus;
+  let timbre: "piano" | "guitar" = "piano";
+  if (fretboard) {
+    // Two natural notes on one string, within twelve frets.
+    const pairs: { pos: { string: number; fret: number }; top: number }[] = [];
+    for (let string = 1; string <= 6; string++) {
+      for (let fret = 0; fret <= 12; fret++) {
+        const m = fretMidi({ string, fret });
+        if (isBlackKey(m)) continue;
+        const span = toMidi(naturalAt(fromMidi(m), num)) - m;
+        if (fret + span <= 12) pairs.push({ pos: { string, fret }, top: fret + span });
+      }
+    }
+    const pair = pick(rng, pairs);
+    lo = fromMidi(fretMidi(pair.pos));
+    stimulus = { type: "fretboard", maxFret: 12, marked: [pair.pos, { string: pair.pos.string, fret: pair.top }] };
+    timbre = "guitar";
+  } else {
+    const [a, b] = clef === "bass" ? [43, 60] : [60, 79];
+    const roots = staffCandidates([a, b], false).filter((r) => toMidi(naturalAt(r, num)) <= b + 5);
+    lo = pick(rng, roots.length ? roots : staffCandidates([a, a + 4], false));
+    const hi = naturalAt(lo, num);
+    stimulus = view === "keyboard" ? { type: "keyboard", range: kbRange(toMidi(lo), toMidi(hi)), marked: [toMidi(lo), toMidi(hi)] } : { type: "staff", clef, notes: [pitchName(lo), pitchName(hi)] };
+  }
+  const hi = naturalAt(lo, num);
+  const midis = [toMidi(lo), toMidi(hi)];
+  return {
+    prompt: "What is the number of the interval between these two notes?",
+    stimuli: [stimulus],
+    response: { type: "choice", choices: numberChoices(rng, nums, num) },
+    expected: { type: "choice", id: String(num) },
+    explain: numberWhy(lo, hi, num),
+    reveal: sound([ev([midis[0]], 0, 1), ev([midis[1]], 1, 1), ev(midis, 2, 2)], timbre),
+  };
 }
 /** A natural lower note and a correctly spelled upper note `iv` above it. */
 export function spelledInterval(rng: Rng, iv: string, lo: number, hi: number): [Pitch, Pitch] {
@@ -142,9 +227,13 @@ function lettersBetween(a: Pitch, b: Pitch): string {
   for (let i = 0; i < n && i < 15; i++) out.push(LETTERS[(start + i) % 7]);
   return out.join(" ");
 }
-export function intervalWhy(lo: Pitch, hi: Pitch, iv: string, labels: string): string {
+export function intervalWhy(lo: Pitch, hi: Pitch, iv: string, labels: string, vocab: Vocab = "full"): string {
   const semis = semitones(iv);
-  if (labels === "steps") return `${pitchLabel(lo)} to ${pitchLabel(hi)} is ${semis === 1 ? "a half step: the very next note" : semis === 2 ? "a whole step: two half steps" : plural(semis, "half step")}.`;
+  if (labels === "steps") {
+    const size = semis === 1 ? "a half step: the very next note" : semis === 2 ? "a whole step: two half steps" : plural(semis, "half step");
+    if (vocab === "plain") return `These two notes are ${size}.`;
+    return `${cap(sayNote(lo, vocab))} to ${sayNote(hi, vocab)} is ${size}.`;
+  }
   const n = lettersBetween(lo, hi);
   return `${pitchLabel(lo)} up to ${pitchLabel(hi)} is ${article(intervalName(iv))} ${intervalName(iv)}: ${plural(n.split(" ").length, "letter name")} (${n}) and ${plural(semis, "half step")}.`;
 }
@@ -155,21 +244,43 @@ function article(w: string): string {
 export const nameInterval: Generator = (p, rng) => {
   const view = pStr(p, "view", "staff");
   const labels = pStr(p, "labels", "names");
-  const pool = intervalPool(p, view !== "staff");
+  if (labels === "numbers") return nameIntervalNumber(p, rng, view);
+  // Only the staff can tell two intervals of the same size apart, and only
+  // by name: counted in half steps they are one answer.
+  let pool = intervalPool(p, view !== "staff" || labels === "steps");
+  if (view === "fretboard") {
+    // Shown along one string, so the widest interval is the whole neck. The
+    // loader refuses a declaration with wider ones (registry cross-check);
+    // this filter only keeps a stray one from ever being drawn.
+    const fits = pool.filter((x) => semitones(x) <= GUITAR_FRETS);
+    pool = fits.length ? fits : ["m2", "M2"];
+  }
   const iv = pick(rng, pool);
   const semis = semitones(iv);
   const base: Pick<Body, "response" | "expected"> = { response: { type: "choice", choices: intervalChoices(rng, pool, iv, labels) }, expected: { type: "choice", id: iv } };
   const ask = labels === "steps" ? "How far apart are these two notes?" : "Name the interval between these two notes.";
   if (view === "fretboard") {
-    const span = Math.min(semis, 12);
-    const pos = { string: int(rng, 1, 6), fret: int(rng, 0, 12 - span) };
+    const span = semis;
+    const maxFret = span <= 12 ? 12 : GUITAR_FRETS;
+    const pos = { string: int(rng, 1, 6), fret: int(rng, 0, maxFret - span) };
     const upper = { string: pos.string, fret: pos.fret + span };
     const lo = fretMidi(pos);
+    // Spell the pair so the letters agree with the interval named: a major
+    // third above D♭ is F, not "C♯ to F" (a diminished fourth as written).
+    let loP = fromMidi(lo);
+    let hiP = fromMidi(lo + span);
+    if (labels !== "steps") {
+      const fit = [fromMidi(lo, "sharp"), fromMidi(lo, "flat")].map((r) => [r, transpose(r, iv)] as const).sort((a, b) => Math.abs(a[1].acc) - Math.abs(b[1].acc))[0];
+      [loP, hiP] = fit;
+    }
+    const vocab = vocabOf(p);
+    const size = labels === "steps" ? aStep(semis) : `${article(intervalName(iv))} ${intervalName(iv)}`;
+    const frets = `${plural(span, "fret")} along one string is ${plural(span, "half step")}`;
     return {
       ...base,
       prompt: ask,
-      stimuli: [{ type: "fretboard", maxFret: 12, marked: [pos, upper] }],
-      explain: `${pitchLabel(fromMidi(lo))} to ${pitchLabel(fromMidi(lo + span))} is ${labels === "steps" ? stepWords(semis) : `${article(intervalName(iv))} ${intervalName(iv)}`}: ${plural(span, "fret")} along one string is ${plural(span, "half step")}.`,
+      stimuli: [{ type: "fretboard", maxFret, marked: [pos, upper] }],
+      explain: vocab === "plain" || vocab === "letters" ? `These two notes are ${size} apart: ${frets}.` : `${sayNote(loP, vocab)} to ${sayNote(hiP, vocab)} is ${size}: ${frets}.`,
       reveal: sound([ev([lo], 0, 1), ev([lo + span], 1, 1), ev([lo, lo + span], 2, 2)], "guitar"),
     };
   }
@@ -181,7 +292,7 @@ export const nameInterval: Generator = (p, rng) => {
     ...base,
     prompt: ask,
     stimuli: [stimulus],
-    explain: intervalWhy(lo, hi, iv, labels),
+    explain: intervalWhy(lo, hi, iv, labels, vocabOf(p)),
     reveal: sound([ev([midis[0]], 0, 1), ev([midis[1]], 1, 1), ev(midis, 2, 2)]),
   };
 };
@@ -221,7 +332,14 @@ const TRIAD_FLIP: Record<string, string[]> = { maj: ["min", "dim"], min: ["maj",
 
 export const nameChord: Generator = (p, rng) => {
   const view = pStr(p, "view", "staff");
-  const pool = chordPool(p, view === "diagram");
+  let pool = chordPool(p, view === "diagram");
+  // Only the staff shows a spelling: on keys or a chord box, C♯ and D♭ major
+  // are the same picture, so only the first of such a pair is asked or offered.
+  // On the keyboard only the set of keys shows, so two chords made of the
+  // same notes (C6 and Am7, C augmented and E augmented) are one picture too.
+  const keySet = (x: ChordRef) => [...new Set(chordPcs(x))].sort((a, b) => a - b).join(",");
+  const look = (x: ChordRef) => (view === "staff" ? chordSymbol(x) : view === "keyboard" ? keySet(x) : `${pcOfClass(x.root)}:${x.type}`);
+  if (view !== "staff") pool = pool.filter((x, i) => pool.findIndex((y) => look(y) === look(x)) === i);
   const c = pick(rng, pool);
   const symbol = chordSymbol(c);
   let stimulus: Stimulus;
@@ -241,18 +359,24 @@ export const nameChord: Generator = (p, rng) => {
   let id: string;
   if (pBool(p, "qualityOnly", false)) {
     const types = uniq([...pool.map((x) => x.type), ...(uniq(pool.map((x) => x.type)).length < 2 ? (TRIAD_FLIP[c.type] ?? ["maj", "min"]).slice(0, 1) : [])]);
-    const ordered = Object.keys(CHORDS).filter((t) => types.includes(t));
+    // Off the staff, a quality that some other root would spell with these
+    // very keys is as right as the one asked (the keys of C6 are A minor
+    // seventh): it is not offered as a wrong answer.
+    const twin = (t: string) => t !== c.type && view === "keyboard" && Array.from({ length: 12 }, (_, r) => r).some((r) => keySet({ root: parsePitchClass(pcNameOf(r)), type: t }) === keySet(c));
+    const ordered = CHORD_ORDER.filter((t) => types.includes(t) && !twin(t));
     choices = window5(rng, ordered, ordered.indexOf(c.type)).map((t) => choice(t, cap(CHORDS[t].name)));
     id = c.type;
   } else {
-    const others = shuffle(rng, pool.filter((x) => chordSymbol(x) !== symbol));
+    // What tells two choices apart: on the staff the spelling, elsewhere only
+    // the notes, so C♯ minor and D♭ minor may not both be offered there.
+    const others = shuffle(rng, pool.filter((x) => look(x) !== look(c)));
     // Same root with another quality first: the confusion worth testing.
     others.sort((a, b) => Number(pcOfClass(b.root) === pcOfClass(c.root)) - Number(pcOfClass(a.root) === pcOfClass(c.root)));
     const picked = others.slice(0, 3);
     for (const t of TRIAD_FLIP[c.type] ?? ["maj", "min"]) {
       if (picked.length >= 3) break;
       const alt = { root: c.root, type: t };
-      if (chordSymbol(alt) !== symbol && !picked.some((x) => chordSymbol(x) === chordSymbol(alt))) picked.push(alt);
+      if (look(alt) !== look(c) && !picked.some((x) => look(x) === look(alt))) picked.push(alt);
     }
     choices = shuffle(rng, [c, ...picked]).map((x) => choice(chordSymbol(x), chordFullName(x)));
     id = symbol;
@@ -336,6 +460,20 @@ export const nameDuration: Generator = (p, rng) => {
   };
 };
 
+/** "A bar of 4/4 holds 4 beats." In a metre whose beat is not the quarter
+ *  note, say what the signature says first, then the quarter-note count the
+ *  rest of the explanation is measured in. */
+function barHolds(time: string, bar: number): string {
+  try {
+    const ts = parseTime(time);
+    const unit: Record<number, string> = { 1: "whole", 2: "half", 8: "eighth", 16: "sixteenth" };
+    if (ts.unit !== 4 && unit[ts.unit]) return `A bar of ${time} holds ${ts.beats} ${unit[ts.unit]} note${ts.beats === 1 ? "" : "s"}, which is ${beatsLabel(bar)} when a quarter note gets one beat.`;
+  } catch {
+    /* fall through */
+  }
+  return `A bar of ${time} holds ${beatsLabel(bar)}.`;
+}
+
 export const countBar: Generator = (p, rng) => {
   const time = pStr(p, "time", "4/4");
   const bar = barBeatsOf(time);
@@ -346,7 +484,15 @@ export const countBar: Generator = (p, rng) => {
   const d = parseDuration(missing);
   const rest = tokens.filter((_, j) => j !== i);
   const sameKind = (v: string) => parseDuration(v).rest === d.rest;
-  const pool = uniq([...values.filter(sameKind), ...["w", "h", "q", "e", "s"].map((v) => v + (d.rest ? "r" : ""))]);
+  // Wrong answers come from the lesson's own note values. Only when those
+  // leave fewer than three to choose from are the plain values next in size
+  // added, and never one shorter than the shortest the lesson uses (no
+  // sixteenths in a lesson that has not met them).
+  const own = uniq([missing, ...values.filter(sameKind)]);
+  const shortest = Math.min(...values.map((v) => parseDuration(v).beats), d.beats);
+  const spare = ["w", "h", "q", "e", "s"].map((v) => v + (d.rest ? "r" : "")).filter((v) => parseDuration(v).beats >= shortest - 1e-9);
+  const distinctBeats = (list: string[]) => uniq(list.map((v) => parseDuration(v).beats)).length;
+  const pool = distinctBeats(own) >= 3 ? own : uniq([...own, ...spare]);
   const distinct = pool.filter((v, j) => v === missing || (parseDuration(v).beats !== d.beats && pool.findIndex((x) => parseDuration(x).beats === parseDuration(v).beats) === j));
   const ordered = [...distinct].sort(BY_LENGTH);
   const choices = window5(rng, ordered, ordered.indexOf(missing), 4).map((v) => choice(v, cap(durationWords(parseDuration(v)))));
@@ -356,20 +502,22 @@ export const countBar: Generator = (p, rng) => {
     stimuli: rest.length ? [{ type: "rhythm", pattern: rest.join(" "), time }] : [{ type: "text", text: `An empty bar of ${time}` }],
     response: { type: "choice", choices },
     expected: { type: "choice", id: missing },
-    explain: `A bar of ${time} holds ${beatsLabel(bar)}. What is shown adds up to ${beatsLabel(have)}, so ${article(durationWords(d))} ${durationWords(d)} (${beatsLabel(d.beats)}) completes it.`,
+    explain: `${barHolds(time, bar)} What is shown adds up to ${beatsLabel(have)}, so ${article(durationWords(d))} ${durationWords(d)} (${beatsLabel(d.beats)}) completes it.`,
   };
 };
 
 export const harmonicFrequency: Generator = (p, rng) => {
-  const fundamentals = pList<number>(p, "fundamentals", [100, 110, 200, 220]).filter((f) => typeof f === "number" && f > 0);
+  const fundamentals = pList<number>(p, "fundamentals", [100, 110, 200, 220]).filter((f) => typeof f === "number" && f >= 1);
   const f = fundamentals.length ? pick(rng, fundamentals) : 110;
   const max = Math.max(2, Math.min(16, Math.floor(pNum(p, "maxHarmonic", 5))));
   const n = int(rng, 2, max);
-  const hz = (x: number) => `${Number((x).toFixed(2))} Hz`;
+  // Enough digits that two different frequencies never print alike.
+  const hz = (x: number) => `${Number(x >= 100 ? x.toFixed(2) : x.toPrecision(4))} Hz`;
   const why = `The ${ordinal(n)} harmonic vibrates ${n} times as fast as the fundamental: ${n} × ${hz(f)} = ${hz(n * f)}.`;
   if (rng() < 0.5) {
     const cands = uniq([f * (n - 1), f * (n + 1), f * (n + 2), (f * n) / 2, f + n, f * n + f / 2].filter((x) => x > 0 && Math.abs(x - f * n) > 1e-9));
-    const values = [f * n, ...shuffle(rng, cands).slice(0, 3)].sort((a, b) => a - b);
+    const others = shuffle(rng, cands).filter((x, i, all) => hz(x) !== hz(f * n) && all.findIndex((y) => hz(y) === hz(x)) === i);
+    const values = [f * n, ...others.slice(0, 3)].sort((a, b) => a - b);
     return {
       prompt: `A string's fundamental is ${hz(f)}. What is the frequency of its ${ordinal(n)} harmonic?`,
       stimuli: [{ type: "text", text: hz(f) }],

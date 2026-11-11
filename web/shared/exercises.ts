@@ -85,8 +85,11 @@ function signature(b: Body): string {
 }
 
 /** `decl.count` questions for one exercise declaration. Never throws for a
- *  declaration the loader accepted. Consecutive questions differ whenever the
- *  parameters leave room. `quiz` gives at most the number authored. */
+ *  declaration the loader accepted. No question is asked twice until every
+ *  question the parameters allow has been asked, and consecutive questions
+ *  differ whenever the parameters leave room (so a `count` above the number
+ *  of distinct questions is a second lap, not a stutter). `quiz` gives at
+ *  most the number authored. */
 export function generateQuestions(decl: ExerciseDecl, seed: number): Question[] {
   const rng = makeRng(seed);
   const count = Math.max(0, Math.floor(Number.isFinite(decl.count) ? decl.count : 5));
@@ -96,10 +99,25 @@ export function generateQuestions(decl: ExerciseDecl, seed: number): Question[] 
   if (!gen) return [];
   const bodies: Body[] = [];
   let last = "";
+  const seen = new Set<string>();
   for (let i = 0; i < count; i++) {
+    // A question not yet asked in this round if the parameters leave one;
+    // failing that, at least not the one just asked. When every question
+    // the parameters allow has been asked, a new round starts: a batch longer
+    // than the pool goes through all of it before anything comes round again,
+    // and then through all of it once more.
     let body = gen(decl.params ?? {}, rng, decl);
-    for (let tries = 0; tries < 12 && signature(body) === last; tries++) body = gen(decl.params ?? {}, rng, decl);
+    let spare: Body | null = signature(body) === last ? null : body;
+    for (let tries = 0; tries < 200 && seen.has(signature(body)); tries++) {
+      body = gen(decl.params ?? {}, rng, decl);
+      if (!spare && signature(body) !== last) spare = body;
+    }
+    if (seen.has(signature(body))) {
+      if (spare) body = spare;
+      seen.clear();
+    }
     last = signature(body);
+    seen.add(last);
     bodies.push(body);
   }
   return finish(bodies);
@@ -135,6 +153,15 @@ export function grade(question: Question, given: Given): Grade {
       const norm = (m: number) => (want.match === "pc" ? pc(m) : m);
       const got = given.midis.map(norm);
       const exp = want.midis.map(norm);
+      if (want.positions) {
+        const key = (x: { string: number; fret: number }) => `${x.string}/${x.fret}`;
+        const played = (given.positions ?? []).map(key);
+        const asked = want.positions.map(key);
+        if (want.ordered) return { correct: played.length === asked.length && played.every((k, i) => k === asked[i]) };
+        // Each asked place once: the same place given twice is not two notes.
+        return { correct: played.length > 0 && new Set(played).size === played.length && played.length === new Set(asked).size && played.every((k) => asked.includes(k)) };
+      }
+      if (want.alsoAccept && got.length === 1 && want.alsoAccept.map(norm).includes(got[0])) return { correct: true };
       if (want.ordered) return { correct: got.length === exp.length && got.every((m, i) => m === exp[i]) };
       return { correct: got.length > 0 && sameSet(got, exp) };
     }
@@ -149,17 +176,19 @@ export function grade(question: Question, given: Given): Grade {
     case "taps": {
       if (given.type !== "taps") return { correct: false };
       const taps = [...given.onsets].sort((a, b) => a - b);
-      const tol = want.toleranceBeats;
+      // Each note has its own window when `tolerances` is given.
+      const tolOf = (i: number) => want.tolerances?.[i] ?? want.toleranceBeats;
       if (taps.length === want.onsets.length) {
         // Same number of taps: pair them in order, so a tap that drifts is
         // measured against the note it was meant for.
         const tapErrors = want.onsets.map((o, i) => taps[i] - o);
-        return { correct: tapErrors.every((e) => Math.abs(e) <= tol + 1e-9), tapErrors };
+        return { correct: tapErrors.every((e, i) => Math.abs(e) <= tolOf(i) + 1e-9), tapErrors };
       }
       // Too many or too few: wrong, but still say how each note fared — the
       // nearest unused tap if one is anywhere close, else a miss.
       const used = new Set<number>();
-      const tapErrors = want.onsets.map((o) => {
+      const tapErrors = want.onsets.map((o, n) => {
+        const tol = tolOf(n);
         let best = -1;
         taps.forEach((t, i) => {
           if (!used.has(i) && Math.abs(t - o) <= tol * 3 && (best < 0 || Math.abs(t - o) < Math.abs(taps[best] - o))) best = i;

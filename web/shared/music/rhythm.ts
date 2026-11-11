@@ -157,19 +157,38 @@ export function barProblems(events: TimedEvent[], time: string): string[] {
   return out;
 }
 
-/** How a beat position is counted aloud: 0 → "1", 0.5 → "&", 1 → "2",
- *  0.25 → "e", 0.75 → "a". */
+/** How long one counted beat is, in quarter notes: 1 in 4/4, 2 in 2/2 (the
+ *  half note gets the beat), 0.5 in 6/8 (every eighth is counted). */
+export function countUnitBeats(time: string): number {
+  return 4 / parseTime(time).unit;
+}
+
+/** How a position in the bar (in quarter notes) is counted aloud. In x/4:
+ *  0 → "1", 0.5 → "&", 1 → "2", 0.25 → "e", 0.75 → "a". The count follows
+ *  the bottom number of the time signature, so in 2/2 the second half note
+ *  is "2", the quarter between is "&", the eighths are "e" and "a", and a
+ *  sixteenth between any two of those is a further "&" ("1 & e & & & a &"). */
 export function countLabel(beatInBar: number, time: string): string {
   const ts = parseTime(time);
   if (ts.unit === 8) {
     const eighth = beatInBar * 2;
-    return Number.isInteger(eighth) ? String(eighth + 1) : "&";
+    if (Math.abs(eighth - Math.round(eighth)) < 1e-9) return String(Math.round(eighth) + 1);
+    // Only the sixteenth exactly between two counted eighths is "&"; anything
+    // finer (a dotted sixteenth) has no word in the count.
+    const half = eighth * 2;
+    return Math.abs(half - Math.round(half)) < 1e-9 ? "&" : "";
   }
-  const whole = Math.floor(beatInBar + 1e-9);
-  const frac = beatInBar - whole;
+  const pos = beatInBar / (4 / ts.unit);
+  const whole = Math.floor(pos + 1e-9);
+  const frac = pos - whole;
   if (frac < 1e-9) return String(whole + 1);
   if (Math.abs(frac - 0.5) < 1e-9) return "&";
   if (Math.abs(frac - 0.25) < 1e-9) return "e";
   if (Math.abs(frac - 0.75) < 1e-9) return "a";
+  // Finer than a quarter of the counted beat (sixteenths in 2/2 fall on
+  // eighths of the half-note beat): each counted quarter of the beat is
+  // split once more, said "&" as when eighths split a quarter-note count.
+  const eighths = frac * 8;
+  if (Math.abs(eighths - Math.round(eighths)) < 1e-9) return "&";
   return "";
 }

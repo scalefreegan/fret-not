@@ -37,7 +37,7 @@ The bass staff works exactly like the treble staff: line, space, line, space, on
 
 ## The lines
 
-From the bottom, the five lines are **G, B, D, F, A**. Click each one and hear how much lower these are than the treble notes.
+From the bottom, the five lines are **G, B, D, F, A**. Press each one and hear how much lower these are than the treble notes.
 
 ```widget
 type: staff
@@ -67,7 +67,7 @@ Every position in the bass clef is named **two letters later** than the same pos
 
 Good landmarks in the bass clef are **F** on line 4 (between the dots), **C** in space 2, and **G** on the bottom line.
 
-Click keys and staff positions here to connect the two.
+Press keys and staff positions here to connect the two.
 
 ```widget
 type: linked

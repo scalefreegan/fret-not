@@ -58,7 +58,7 @@ Bass F and treble G sit the same distance either side of middle C, like a mirror
 
 On the staff, one step (line to space, or space to line) is **one white key** to the right or left. A skip from a line to the next line, or from a space to the next space, is **two white keys**: you jump over one.
 
-Click different lines and spaces on the staff below and watch the key move. Then do it the other way: click a key and see where it is written.
+Press different lines and spaces on the staff below and watch the key move. Then do it the other way: press a key and see where it is written.
 
 ```widget
 type: linked

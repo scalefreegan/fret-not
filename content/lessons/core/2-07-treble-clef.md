@@ -35,7 +35,7 @@ In the treble clef, line 2 is G. Everything else comes from counting letters up 
 
 ## The lines
 
-From the bottom, the five lines are **E, G, B, D, F**. Click each one.
+From the bottom, the five lines are **E, G, B, D, F**. Press each one.
 
 ```widget
 type: staff
@@ -67,7 +67,7 @@ The phrases get you started, but they are slow. A faster habit is to know a few 
 - **C** in space 3.
 - **F** on the top line.
 
-Click around in the widget below. Click a key on the keyboard and watch where the note goes on the staff, or click a line or space on the staff and see which key it is.
+Try the widget below. Press a key on the keyboard and watch where the note goes on the staff, or press a line or space on the staff and see which key it is.
 
 ```widget
 type: linked

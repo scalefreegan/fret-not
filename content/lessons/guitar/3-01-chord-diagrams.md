@@ -51,6 +51,7 @@ exercises:
     count: 4
     instrument: guitar
     chords: [Em, Am]
+    show: diagram
 ---
 
 Guitar chords are usually shown as a **chord diagram** (also called a chord box): a small picture of the top few frets of the fretboard with dots where your fingers go.
@@ -63,7 +64,7 @@ Imagine the guitar standing upright, facing you.
 - An **O** above a string means play it **open**.
 - An **X** above a string means **do not play** it.
 
-Here is the diagram for E minor, one of the easiest chords there is. Click it to hear it strummed.
+Here is the diagram for E minor, one of the easiest chords there is. Press it to hear it strummed.
 
 ```widget
 type: chord-diagram
@@ -101,6 +102,8 @@ chords: [Em, Am]
 A minor has an **X** over string 6: the low E string is left out, and the strum starts from string 5. That is because the lowest note of a chord sounds best when it is the root, and string 5 open is an A.
 
 String by string, A minor is: X, open, fret 2, fret 2, fret 1, open.
+
+When an exercise asks you to copy a diagram onto the fretboard, mark one note on every string that is played: the fretted dots, and also each open string, which you mark by pressing just to the left of the nut. Skip only the strings marked X.
 
 ## Diagram or tab?
 

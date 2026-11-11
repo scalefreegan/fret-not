@@ -19,7 +19,8 @@ every idea shown, heard and drilled on the piano and the guitar.
 - **A Lab** of open explorers and a **Sketchpad** for writing a melody over chords.
 - **A Tutor**: an embedded Claude agent that answers questions about the lesson
   in front of you and can write new lessons into `content/` (each change is a
-  git commit).
+  git commit). It writes only while `content/` has no uncommitted changes;
+  otherwise it answers questions and says why it cannot edit.
 
 Single user, localhost, no accounts, no database. The curriculum is plain
 markdown and YAML in `content/`.
@@ -54,3 +55,9 @@ npm run typecheck && npm run lint
 Music glyphs are set in [Bravura](https://github.com/steinbergmedia/bravura)
 (SIL Open Font License; see `web/public/fonts/Bravura-OFL.txt`). Instrument
 samples and their licences are listed in `web/public/samples/CREDITS.md`.
+
+## Licence
+
+The code and the lessons under `content/` are released under the MIT licence
+(see `LICENSE`). The bundled font and instrument samples keep their own
+licences, listed under Credits above.

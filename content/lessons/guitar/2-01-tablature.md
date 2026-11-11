@@ -56,7 +56,7 @@ Tab has **six lines, one for each string**. It is drawn the way the sound goes, 
 
 That matches the fretboard picture in this app, which also has the low E string at the bottom.
 
-A **number on a line** means: press that string at that fret and pluck it. **0** means the open string. You read from left to right, just like the staff.
+A **number on a line** means: press that string at that fret and pluck it. **0** means the open string. You read from left to right, just like the staff. Numbers written one after another are played one after another. Numbers stacked directly above one another, in the same vertical slice, are played at the same time.
 
 Play this and watch each number light up on the fretboard. It walks up the low E string and then the A string.
 
