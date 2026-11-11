@@ -1,0 +1,149 @@
+import { useMemo } from "react";
+import type { Lesson } from "../../shared/content.ts";
+import { dueConcepts, isMastered, levelStatuses, nextLesson, UNLOCK_FRACTION } from "../../shared/progress.ts";
+import { go, href } from "../router.ts";
+import { useAppData } from "../state.tsx";
+import { Button, Card, cx } from "../ui.tsx";
+
+// The path: every level, its lessons in three columns (theory, piano,
+// guitar), what is done, what is next, and what is due for review.
+
+function LessonRow({ lesson, done, isNext, locked }: { lesson: Lesson; done: boolean; isNext: boolean; locked: boolean }) {
+  return (
+    <a
+      href={locked ? undefined : href("lesson", lesson.id)}
+      aria-disabled={locked}
+      title={lesson.summary}
+      className={cx("group flex items-center gap-2.5 rounded-lg px-2.5 py-1.5 transition-colors", locked ? "cursor-not-allowed opacity-50" : "hover:bg-raised", isNext && "bg-accent-soft")}
+    >
+      <span className={cx("flex h-5 w-5 shrink-0 items-center justify-center rounded-full border-2 text-[0.7rem] font-bold", done ? "border-good bg-good text-panel" : isNext ? "border-accent" : "border-line-strong")}>{done ? "✓" : ""}</span>
+      <span className={cx("min-w-0 flex-1 truncate", done ? "text-fg-2" : "font-medium text-fg")}>{lesson.title}</span>
+      {isNext && <span className="text-xs font-bold text-accent">NEXT</span>}
+    </a>
+  );
+}
+
+export function HomePage() {
+  const { content, progress, reset } = useAppData();
+  const now = useMemo(() => new Date(), []);
+  if (!content) return null;
+  const statuses = levelStatuses(content, progress);
+  const next = nextLesson(content, progress);
+  const due = dueConcepts(progress, now);
+  const started = Object.keys(progress.lessons).length > 0 || progress.placedLevel > 0;
+  const mastered = content.concepts.filter((c) => isMastered(progress.concepts[c.id])).length;
+
+  return (
+    <div className="mx-auto max-w-5xl px-5 pt-8 pb-24">
+      <section className="grid gap-4 @container md:grid-cols-[1.5fr_1fr]">
+        <Card className="flex flex-col justify-between gap-4 px-6 py-5">
+          <div>
+            <p className="text-sm font-bold tracking-wide text-accent uppercase">{started ? "Continue" : "Start here"}</p>
+            {next ? (
+              <>
+                <h1 className="mt-1 text-3xl leading-tight font-bold text-fg">{next.title}</h1>
+                <p className="mt-1 text-fg-2">{next.summary}</p>
+              </>
+            ) : (
+              <>
+                <h1 className="mt-1 text-3xl font-bold text-fg">Everything open is done.</h1>
+                <p className="mt-1 text-fg-2">Keep reviewing to unlock the next level, or ask the Tutor to write you a new lesson.</p>
+              </>
+            )}
+          </div>
+          <div className="flex flex-wrap items-center gap-3">
+            {next && <Button variant="primary" onClick={() => go("lesson", next.id)}>{started ? "Continue" : "Begin"} · Level {next.level}</Button>}
+            {!started && <Button variant="ghost" onClick={() => go("placement")}>I already know some of this: place me</Button>}
+          </div>
+        </Card>
+        <Card className="flex flex-col justify-between gap-3 px-6 py-5">
+          <div>
+            <p className="text-sm font-bold tracking-wide text-fg-3 uppercase">Review</p>
+            <p className="mt-1 font-display text-3xl font-bold text-fg">{due.length ? `${due.length} due` : "Nothing due"}</p>
+            <p className="mt-1 text-fg-2">{due.length ? "Short questions on ideas you have already mastered, spaced so they stick." : `${mastered} of ${content.concepts.length} concepts mastered. Mastered ideas come back here at growing intervals.`}</p>
+          </div>
+          <div>{due.length > 0 ? <Button variant="primary" onClick={() => go("review")}>Review now</Button> : mastered > 0 ? <Button onClick={() => go("review")}>Practise anyway</Button> : null}</div>
+        </Card>
+      </section>
+
+      {content.problems.length > 0 && (
+        <Card className="mt-4 border-warn bg-warn-soft px-5 py-3">
+          <p className="font-semibold text-fg">Content problems ({content.problems.length})</p>
+          <p className="text-sm text-fg-2">These files were refused by the loader and are not shown. Fix them, or ask the Tutor to.</p>
+          <ul className="mt-1 list-disc pl-5 font-mono text-xs text-fg-2">
+            {content.problems.slice(0, 12).map((p, i) => (
+              <li key={i}>{p.file}: {p.message}</li>
+            ))}
+          </ul>
+        </Card>
+      )}
+
+      {content.levels.map((level) => {
+        const st = statuses.find((s) => s.level === level.id)!;
+        const lessons = content.lessons.filter((l) => l.level === level.id);
+        const prevSt = statuses.find((s) => s.level === level.id - 1);
+        const outline = level.status === "outline";
+        const need = prevSt ? Math.max(0, Math.ceil(prevSt.total * UNLOCK_FRACTION) - prevSt.mastered) : 0;
+        return (
+          <section key={level.id} className="mt-8">
+            <div className="flex flex-wrap items-end justify-between gap-x-6 gap-y-1">
+              <div className="min-w-0">
+                <h2 className={cx("text-2xl font-bold", st.unlocked ? "text-fg" : "text-fg-3")}>
+                  <span className="mr-2 text-fg-3">{level.id}</span>
+                  {level.title}
+                </h2>
+                <p className="text-fg-2">{level.summary}</p>
+              </div>
+              {!outline && (
+                <div className="flex items-center gap-2 text-sm text-fg-3">
+                  <span className="h-2 w-32 overflow-hidden rounded-full bg-raised"><span className="block h-full rounded-full bg-good transition-[width]" style={{ width: `${st.total ? (st.mastered / st.total) * 100 : 0}%` }} /></span>
+                  <span className="tabular-nums">{st.mastered}/{st.total} mastered</span>
+                </div>
+              )}
+            </div>
+            {outline ? (
+              <Card className="mt-3 border-dashed px-5 py-3">
+                <p className="text-sm font-semibold text-fg-3">Outlined, not yet written. Ask the Tutor to write a lesson on any of these:</p>
+                <ul className="mt-1 grid gap-x-6 text-fg-2 sm:grid-cols-2">
+                  {level.topics.map((t) => (
+                    <li key={t} className="before:mr-2 before:text-fg-3 before:content-['·']">{t}</li>
+                  ))}
+                </ul>
+              </Card>
+            ) : (
+              <>
+                {!st.unlocked && (
+                  <p className="mt-2 rounded-lg bg-raised px-3 py-2 text-sm text-fg-2">
+                    Locked. Master {need} more concept{need === 1 ? "" : "s"} in level {level.id - 1} to open it, or <a className="font-semibold underline" href={href("placement")}>take the placement check</a>.
+                  </p>
+                )}
+                <Card className="mt-3 grid gap-x-4 gap-y-3 px-3 py-3 md:grid-cols-3">
+                  {content.tracks.map((track) => {
+                    const mine = lessons.filter((l) => l.track === track.id);
+                    return (
+                      <div key={track.id}>
+                        <p className="px-2.5 pb-1 text-xs font-bold tracking-wide text-fg-3 uppercase">{track.id === "core" ? "Theory" : track.title}</p>
+                        {mine.length === 0 && <p className="px-2.5 text-sm text-fg-3">—</p>}
+                        {mine.map((l) => (
+                          <LessonRow key={l.id} lesson={l} done={!!progress.lessons[l.id]} isNext={next?.id === l.id} locked={!st.unlocked} />
+                        ))}
+                      </div>
+                    );
+                  })}
+                </Card>
+              </>
+            )}
+          </section>
+        );
+      })}
+
+      {started && (
+        <p className="mt-10 text-center text-sm text-fg-3">
+          <button type="button" className="underline hover:text-fg" onClick={() => { if (window.confirm("Start over? Your current progress is archived in data/profiles/default/, not deleted.")) void reset(); }}>Reset progress</button>
+          {" · "}
+          <a className="underline hover:text-fg" href={href("placement")}>Placement check</a>
+        </p>
+      )}
+    </div>
+  );
+}

@@ -8,7 +8,7 @@ import { isScaleType, scaleNotes } from "../music/scales.ts";
 import { intervalChoices, intervalPool } from "./identify.ts";
 import {
   arpThenChord, article, barBeatsOf, cap, choice, durationTokens, durationWords, ev, fillBar, int, joinAnd, kbRange, melodic, midiLabel, pList, pNum, pRange, pStr, pick, plural, rhythmSound, shuffle, sound,
-  stepWords, uniq, window5, type Generator,
+  aStep, uniq, window5, type Generator,
 } from "./util.ts";
 
 const TIMBRES: Timbre[] = ["sine", "triangle", "square", "saw", "piano", "guitar"];
@@ -27,7 +27,7 @@ export const earHigherLower: Generator = (p, rng) => {
     stimuli: [{ type: "sound", sound: melodic([first, second], timbre), autoplay: true }],
     response: { type: "choice", choices: [choice("higher", "Higher"), choice("lower", "Lower")] },
     expected: { type: "choice", id: up ? "higher" : "lower" },
-    explain: `The second note (${midiLabel(second)}) is ${up ? "higher" : "lower"} than the first (${midiLabel(first)}) by ${stepWords(gap)}: it vibrates ${up ? "faster" : "more slowly"}.`,
+    explain: `The second note (${midiLabel(second)}) is ${up ? "higher" : "lower"} than the first (${midiLabel(first)}) by ${aStep(gap)}: it vibrates ${up ? "faster" : "more slowly"}.`,
     reveal: melodic([first, second], timbre),
   };
 };
@@ -41,7 +41,7 @@ export const earInterval: Generator = (p, rng) => {
   const harmonic = modeParam === "harmonic" || (modeParam === "both" && rng() < 0.5);
   const lo = int(rng, 55, 67);
   const midis = [lo, lo + semis];
-  const said = labels === "steps" ? stepWords(semis) : `${article(intervalName(iv))} ${intervalName(iv)}`;
+  const said = labels === "steps" ? aStep(semis) : `${article(intervalName(iv))} ${intervalName(iv)}`;
   return {
     prompt: labels === "steps" ? "Listen. How far apart are the two notes?" : "Listen. Which interval is this?",
     stimuli: [{ type: "sound", sound: harmonic ? sound([ev(midis, 0, 2)]) : melodic(midis), autoplay: true }],
@@ -90,8 +90,8 @@ const TIMBRE_WHY: Record<Timbre, string> = {
   triangle: "only odd harmonics, fading quickly, so it sounds soft and hollow",
   square: "strong odd harmonics, so it sounds hollow and buzzy",
   saw: "every harmonic, strongly, so it sounds bright and buzzy",
-  piano: "a struck string: a sharp start, then many harmonics dying away",
-  guitar: "a plucked string: a bright pluck whose upper harmonics fade first",
+  piano: "a struck string, with a sharp start and many harmonics that die away slowly",
+  guitar: "a plucked string, with a bright pluck whose upper harmonics fade first",
 };
 
 export const earTimbre: Generator = (p, rng) => {

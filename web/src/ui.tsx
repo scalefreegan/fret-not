@@ -1,4 +1,4 @@
-import type { ButtonHTMLAttributes, CSSProperties, ReactNode } from "react";
+import type { ButtonHTMLAttributes, CSSProperties, ReactNode, Ref } from "react";
 import { pc } from "../shared/music/notes.ts";
 
 // Small shared pieces. Widgets and pages build from these so controls look
@@ -17,7 +17,7 @@ export function pcStyle(midiOrPc: number): CSSProperties {
   return { background: pcColor(midiOrPc), color: "var(--pc-ink)" };
 }
 
-type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & { variant?: "primary" | "quiet" | "ghost"; size?: "sm" | "md" };
+type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & { variant?: "primary" | "quiet" | "ghost"; size?: "sm" | "md"; ref?: Ref<HTMLButtonElement> };
 
 /** primary: the one main action in view (sits on a pressed edge). quiet:
  *  secondary actions. ghost: tertiary, text only. */

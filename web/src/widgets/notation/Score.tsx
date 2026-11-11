@@ -412,7 +412,7 @@ function ScoreSvg({ clef, items, keySig, time, tab, active, tone = "ink", onItem
       }
       if (it.label)
         ig.push(
-          <text key="label" x={cx} y={y0 * 0 + labelsY + 1.3 * S} textAnchor="middle" fontSize={S * 1.35} fontWeight={650} fill="var(--fg-2)" style={{ fontFamily: "var(--font-sans)" }}>
+          <text key="label" x={cx} y={labelsY + 1.3 * S} textAnchor="middle" fontSize={S * 1.35} fontWeight={650} fill="var(--fg-2)" style={{ fontFamily: "var(--font-sans)" }}>
             {it.label}
           </text>,
         );

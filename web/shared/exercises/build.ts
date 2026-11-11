@@ -5,7 +5,7 @@ import { accSymbol, fromMidi, isBlackKey, isPitchClass, parsePitchClass, pc, pcL
 import { keySignature, parseKey, SCALES, scaleNotes } from "../music/scales.ts";
 import { chordWhy, intervalPool, pickKey } from "./identify.ts";
 import { scaleKeyboard, scalePick, scaleWhy } from "./play.ts";
-import { arpThenChord, article, cap, choice, ev, kbRange, melodic, pList, pStr, pick, plural, shuffle, sound, stepWords, uniq, type Generator } from "./util.ts";
+import { arpThenChord, article, cap, choice, ev, kbRange, melodic, pList, pStr, pick, plural, shuffle, sound, aStep, uniq, type Generator } from "./util.ts";
 
 export const buildInterval: Generator = (p, rng) => {
   const labels = pStr(p, "labels", "names");
@@ -36,7 +36,7 @@ export const buildInterval: Generator = (p, rng) => {
   const target = transpose(start, iv, up ? 1 : -1);
   const targetMidi = toMidi(target);
   const dir = up ? "above" : "below";
-  const said = labels === "steps" ? stepWords(semis) : `${article(intervalName(iv))} ${intervalName(iv)}`;
+  const said = labels === "steps" ? aStep(semis) : `${article(intervalName(iv))} ${intervalName(iv)}`;
   return {
     prompt: `Play the note ${said} ${dir} the marked ${pcLabel(start)}.`,
     stimuli: [{ type: "text", text: `${cap(said)} ${dir} ${pcLabel(start)}` }],
@@ -46,7 +46,7 @@ export const buildInterval: Generator = (p, rng) => {
     expected: { type: "notes", midis: [targetMidi], match: "exact", ordered: false },
     explain:
       labels === "steps"
-        ? `${cap(said)} ${dir} ${pitchLabel(start)} is ${pitchLabel(target)}: ${semis === 1 ? "the very next note" : `${semis} notes along, counting every key or fret`}.`
+        ? `${cap(said)} ${dir} ${pitchLabel(start)} is ${pitchLabel(target)}: ${semis === 1 ? "the very next note" : semis === 2 ? "two half steps, so one key or fret is skipped" : `${semis} half steps, counting every key or fret`}.`
         : `${cap(said)} ${dir} ${pitchLabel(start)} is ${pitchLabel(target)}: ${plural(semis, "half step")} ${up ? "up" : "down"}, ${plural(iv.length ? Number(iv.slice(1)) : 1, "letter name")} counting both ends.`,
     reveal: sound([ev([startMidi], 0, 1), ev([targetMidi], 1, 1), ev([startMidi, targetMidi], 2, 2)], guitar ? "guitar" : "piano"),
   };
@@ -85,7 +85,7 @@ export const buildChord: Generator = (p, rng) => {
   while (Math.max(...midis) > 72) midis = midis.map((m) => m - 12);
   return {
     prompt: `Build ${chordKind(c.type)} on ${pcLabel(c.root)}: select its notes on the keyboard, then check.`,
-    stimuli: [{ type: "text", text: `${cap(CHORDS[c.type].name)} on ${pcLabel(c.root)}` }],
+    stimuli: [{ type: "text", text: `${cap(chordKind(c.type).replace(/^an? /, ""))} on ${pcLabel(c.root)}` }],
     response: { type: "keyboard", range: [48, 72], mode: "set", labels: "none" },
     expected: { type: "notes", midis: chordPcs(c).map((x) => 60 + x), match: "pc", ordered: false },
     explain: chordWhy(c),

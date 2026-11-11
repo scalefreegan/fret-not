@@ -8,7 +8,7 @@ import { keyOfSignature, keySignature, parseKey, scaleNotes } from "../music/sca
 import type { Clef } from "../music/staff.ts";
 import {
   ALL_STRINGS, arpThenChord, barBeatsOf, beatsLabel, cap, choice, durationTokens, durationWords, fillBar, fretCandidates, int, intervalLabel, joinAnd, kbRange, keyWhere, melodic, midiCandidates,
-  ordinal, pBool, pList, pNum, pRange, pStr, pick, plural, posWhere, shuffle, sound, ev, staffWhere, stepWords, uniq, window5, type Body, type Generator, type Params, type Rng,
+  ordinal, pBool, pList, pNum, pRange, pStr, pick, plural, posWhere, shuffle, sound, ev, staffWhere, stepWords, aStep, uniq, window5, type Body, type Generator, type Params, type Rng,
 } from "./util.ts";
 
 const clefOf = (p: Params): Clef => (pStr(p, "clef", "treble") === "bass" ? "bass" : "treble");
@@ -16,7 +16,13 @@ const DEFAULT_STAFF_RANGE: Record<Clef, [number, number]> = { treble: [60, 81], 
 
 /** Every spelling a staff note-naming question can offer: each letter as a
  *  natural, a sharp and a flat, in letter order. */
-const SPELLED = LETTERS.flatMap((letter) => [-1, 0, 1].map((acc) => ({ letter, acc })));
+const SPELLED = LETTERS.flatMap((letter) => [-1, 0, 1].map((acc) => ({ letter, acc }))).filter((s) => !isWhiteKeyRespelled(s.letter, s.acc));
+
+/** E♯, B♯, F♭ and C♭ are white keys under another name: real, but not
+ *  beginner reading material, so note-naming leaves them out. */
+function isWhiteKeyRespelled(letter: string, acc: number): boolean {
+  return (acc === 1 && (letter === "E" || letter === "B")) || (acc === -1 && (letter === "F" || letter === "C"));
+}
 
 /** Spelled pitches inside a MIDI range: naturals, plus single sharps and
  *  flats when `accidentals`. Never empty. */
@@ -25,6 +31,7 @@ function staffCandidates(range: [number, number], accidentals: boolean): Pitch[]
   for (let oct = -1; oct <= 9; oct++) {
     for (const letter of LETTERS) {
       for (const acc of accidentals ? [0, 1, -1] : [0]) {
+        if (isWhiteKeyRespelled(letter, acc)) continue;
         const p = { letter, acc, oct };
         const m = toMidi(p);
         if (m >= range[0] && m <= range[1]) out.push(p);
@@ -93,7 +100,7 @@ export const nameNote: Generator = (p, rng) => {
     stimuli: [stimulus],
     response: { type: "choice", choices: pcChoices(rng, midi, accidentals || black) },
     expected: { type: "choice", id: pcNameOf(midi) },
-    explain: pos.fret === 0 ? `That is ${pcBothLabels(midi)}: ${posWhere(pos)}.` : `That is ${pcBothLabels(midi)}: ${posWhere(pos)}, ${stepWords(pos.fret)} above the open ${pcNameOf(open)}.`,
+    explain: pos.fret === 0 ? `That is ${pcBothLabels(midi)}: ${posWhere(pos)}.` : `That is ${pcBothLabels(midi)}: ${posWhere(pos)}, ${aStep(pos.fret)} above the open ${pcNameOf(open)}.`,
     reveal: melodic([midi], "guitar"),
   };
 };

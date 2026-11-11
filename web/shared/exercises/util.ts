@@ -137,6 +137,10 @@ export function article(word: string): string {
 export function stepWords(semis: number): string {
   return semis === 1 ? "half step" : semis === 2 ? "whole step" : plural(semis, "half step");
 }
+/** The same with its article: "a half step", "a whole step", "5 half steps". */
+export function aStep(semis: number): string {
+  return semis === 1 || semis === 2 ? `a ${stepWords(semis)}` : stepWords(semis);
+}
 /** The label of an interval choice under the `labels` parameter. */
 export function intervalLabel(iv: string, labels: string): string {
   return labels === "steps" ? cap(stepWords(semitones(iv))) : cap(intervalName(iv));
@@ -152,7 +156,7 @@ export function staffWhere(p: Pitch | string, clef: Clef): string {
   const dist = pos < 0 ? -pos : pos - 8;
   if (dist === 1) return `the space just ${side} the ${clef} staff`;
   const n = Math.floor(dist / 2);
-  const which = n === 1 ? "the first ledger line" : `the ${ordinal(n)} ledger line`;
+  const which = `the ${["first", "second", "third", "fourth", "fifth"][n - 1] ?? ordinal(n)} ledger line`;
   return dist % 2 === 0 ? `${which} ${side} the ${clef} staff` : `the space beyond ${which} ${side} the ${clef} staff`;
 }
 

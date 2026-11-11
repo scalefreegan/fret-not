@@ -147,31 +147,31 @@ review schedule with growing intervals, and a missed review shortens its interva
 content/               the product (git-tracked)
   curriculum.yaml      tracks, levels, concepts and their prerequisites
   instruments/         piano.yaml, guitar.yaml
-  lessons/<track>/     one .md per lesson: frontmatter (level, concepts) + body with widget blocks
-  exercises/           reusable exercise declarations
-scripts/
-  music/               pure ESM music engine: notes, intervals, scales, chords,
-                       staff positions, fretboard and keyboard mapping (node --test)
-  content.mjs          load + validate content (pure, no server deps)
-  exercises.mjs        generate and grade exercises (pure, seeded, tested)
-  progress.mjs         mastery and review scheduling (pure, tested)
-  claude.mjs           spawn headless claude for the tutor (sibling pattern)
-  tests/*.test.mjs
+  lessons/<track>/     one .md per lesson: frontmatter (level, concepts, exercises) + body with widget blocks
 web/
-  server/api.ts        plugins + wrap() same-origin guard (copy Lingo Dojo)
-  server/content.ts    curriculum, lessons, exercise generation and grading
+  shared/music/        the music engine: notes, intervals, scales, chords, staff
+                       positions, fretboard and keyboard mapping, rhythm tokens
+                       (pure TS; runs in the browser, the server and node --test)
+  shared/registry.ts   every widget and exercise kind with its parameters
+  shared/exercises*    generate and grade exercises (pure, seeded)
+  shared/progress.ts   mastery and review scheduling (pure)
+  server/api.ts        plugins + wrap() same-origin guard
+  server/loader.ts     load + validate content
   server/progress.ts   read and write data/profiles/<id>/
-  server/chat.ts       SSE tutor chat, auto-commit of content/ edits
-  shared/wire.ts       types shared by server and client
-  src/
-    audio/             sample player, synth, metronome clock (Web Audio)
-    input/             input sources -> note events
-    widgets/           string sim, harmonic mixer, scope, staff, keyboard,
-                       fretboard, tab, chord diagram, metronome
-    pages/             Home, Lesson, Review, Lab, Sketchpad
+  server/chat.ts       SSE tutor chat, validation loop, auto-commit of content/ edits
+  src/audio/           sample player, synth, scheduling on the audio clock
+  src/widgets/         sound/ (string sim, harmonic mixer, scope …) and notation/
+                       (engraver, keyboard, fretboard, tab, chord boxes, linked views)
+  src/exercises/       the runner that renders generated questions
+  src/pages/           Home (path), Lesson, Review + Placement, Lab, Sketchpad
+  src/tutor/           the tutor drawer
+scripts/
+  claude.mjs           spawn headless claude for the tutor (sibling pattern)
+  check-content.ts     validate content/ from the command line
+  gen-reference.ts     regenerate docs/CONTENT-REFERENCE.md from the registry
 data/                  learner progress, chat history, settings (gitignored)
 macos/                 Dock app (Fret Not.app), copied from Lingo Dojo, port 38600
-docs/                  this PRD; CONTENT.md (file-format contract) to follow
+docs/                  this PRD; CONTENT.md (file-format contract); CONTENT-REFERENCE.md (generated)
 ```
 
 The tutor follows the Lingo Dojo rule: headless `claude -p` on the Claude Code
@@ -179,15 +179,31 @@ login, Read on the repo, **Write/Edit only under `content/`**, every change
 auto-committed as `agent: <summary>`. It never grades exercises and never
 touches `web/`, `scripts/` or `data/`.
 
-## Open build choices (mine to settle during the build, not product decisions)
+## Build choices made (2026-11-10)
 
-- Notation rendering: an engraving library versus hand-drawn SVG for staff and tab.
-- Audio: plain Web Audio versus a scheduling library; which sample sets, with
-  their licences checked and credited before they are committed.
-- A theory library versus an in-house engine for `scripts/music/`.
-- Visual design direction for the app and its icon.
+- **Engine location**: `web/shared/music/` in TypeScript rather than
+  `scripts/music/` in ESM. Node 26 runs TypeScript directly, so one copy
+  serves the browser, the server and the tests.
+- **Notation**: an in-house SVG engraver (`Score.tsx`) with Bravura glyphs,
+  for full control of colour, click targets and tab alignment.
+- **Audio**: plain Web Audio. Piano: Salamander Grand Piano; guitar: OLPC /
+  Berklee open strings; both CC BY 3.0, credited in
+  `web/public/samples/CREDITS.md`. A synth covers everything else.
+- **Theory**: an in-house engine, no library.
+- **Sketches** are kept in the browser's local storage, not under `data/`.
 
-## Suggested build order
+## Known gaps in v1
+
+- Eighth and sixteenth notes are drawn with flags, not beamed.
+- The "complete a short melody" build exercise is not implemented; the
+  Sketchpad covers free composing.
+- Guitar samples are the six open strings pitch-shifted, so high frets sound
+  less natural than the piano.
+- Sketchpad: one saved sketch, 4/4 only, melody in one voice.
+- Tap timing has been checked by script, not tuned by a human against real
+  audio latency.
+
+## Build order (as planned; all seven steps landed in the first PR)
 
 1. **Engine and contract** — `scripts/music/`, content loader, `docs/CONTENT.md`, tests.
 2. **Linked views** — staff, keyboard and fretboard widgets with sampled sound;

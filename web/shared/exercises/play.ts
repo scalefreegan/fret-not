@@ -166,12 +166,17 @@ export const tapRhythm: Generator = (p, rng) => {
     return `the ${label === "&" ? "“and”" : `“${label}”`} of ${Math.floor((unit8 ? inBar * 2 : inBar) + 1e-9) + 1}`;
   });
   const pattern = bars.map((b) => b.join(" ")).join(" | ");
+  const where = Array.from({ length: nBars }, (_, b) => {
+    const inThisBar = counted.filter((_c, i) => Math.floor(onsets[i] / bar + 1e-9) === b);
+    const said = inThisBar.length ? joinAnd(inThisBar) : "nothing (a bar of rest)";
+    return nBars > 1 ? `In bar ${b + 1} the notes start on ${said}.` : `The notes start on ${said}.`;
+  }).join(" ");
   return {
     prompt: `Tap this rhythm on the space bar. You get one bar of clicks to count you in.`,
     stimuli: [{ type: "rhythm", pattern, time }],
     response: { type: "tap", pattern, time, tempo, countInBeats: bar },
     expected: { type: "taps", onsets, toleranceBeats: (TAP_TOLERANCE_SECONDS * tempo) / 60 },
-    explain: `${nBars > 1 ? "Counting each bar, the" : "The"} notes start on ${joinAnd(counted)}. Hold each note for its full length; you only tap where a note begins.`,
+    explain: `${where} Hold each note for its full length; you only tap where a note begins.`,
     reveal: rhythmSound(tokens, tempo),
   };
 };

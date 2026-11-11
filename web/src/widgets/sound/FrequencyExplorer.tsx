@@ -79,17 +79,16 @@ export function FrequencyExplorer({ params }: WidgetProps) {
       }
     >
       <div className="grid gap-3 @xl:grid-cols-[minmax(0,1fr)_11rem] @xl:items-center">
+        <div>
         <svg viewBox="0 0 640 190" className="block w-full" role="img" aria-label={`A wave of ${Math.round(hz)} hertz over ${WINDOW_MS} thousandths of a second`}>
           <line x1={0} x2={640} y1={95} y2={95} stroke="var(--line)" strokeDasharray="3 5" />
           <path d={wavePath((x) => level * Math.sin(2 * Math.PI * cycles * x), 640, 190, 80, 900)} fill="none" stroke="var(--ink)" strokeWidth={2.4} strokeLinejoin="round" />
           <line x1={2} x2={638} y1={182} y2={182} stroke="var(--fg-3)" />
           <line x1={2} x2={2} y1={177} y2={187} stroke="var(--fg-3)" />
           <line x1={638} x2={638} y1={177} y2={187} stroke="var(--fg-3)" />
-          <rect x={250} y={173} width={140} height={17} fill="var(--panel)" />
-          <text x={320} y={187} textAnchor="middle" fontSize={12} fill="var(--fg-3)">
-            {WINDOW_MS} thousandths of a second
-          </text>
         </svg>
+        <p className="text-center text-xs text-fg-3">The picture always shows the same stretch of time: {WINDOW_MS} thousandths of a second.</p>
+        </div>
         <div className="flex flex-wrap items-baseline justify-center gap-x-4 gap-y-1 text-center @xl:flex-col @xl:items-center">
           <div>
             <span className="font-display text-4xl font-bold text-fg tabular-nums">{hz >= 100 ? Math.round(hz) : hz.toFixed(1)}</span>

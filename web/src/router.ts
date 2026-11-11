@@ -24,7 +24,7 @@ export function useRoute(): Route {
   useEffect(() => {
     const on = () => {
       setRoute(parse(window.location.hash));
-      window.scrollTo(0, 0);
+      scrollTop();
     };
     window.addEventListener("hashchange", on);
     return () => window.removeEventListener("hashchange", on);
@@ -37,4 +37,9 @@ export function href(name: string, arg?: string): string {
 }
 export function go(name: string, arg?: string): void {
   window.location.hash = href(name, arg);
+}
+
+/** The page scrolls inside <main>, not the window (the tutor has its own column). */
+export function scrollTop(): void {
+  document.getElementById("main-scroll")?.scrollTo(0, 0);
 }

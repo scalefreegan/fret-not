@@ -499,7 +499,8 @@ test("durations, bars and harmonics add up", () => {
   }
   for (const q of many("harmonic-frequency", { fundamentals: [110], maxHarmonic: 6 }, 10)) {
     assert.ok(q.expected.type === "choice" && q.response.type === "choice");
-    const right = q.response.choices.find((c) => c.id === q.expected.id)!;
+    const wantId = q.expected.id;
+    const right = q.response.choices.find((c) => c.id === wantId)!;
     const n = /(\d+)(?:st|nd|rd|th) harmonic/.exec(q.prompt.includes("Which of its harmonics") ? right.label : q.prompt);
     assert.ok(n);
     assert.ok(Number(n[1]) >= 2 && Number(n[1]) <= 6);
@@ -694,7 +695,8 @@ test("quiz: authored questions, no repeats, shuffled choices keep the right answ
     for (const q of qs) {
       const src = QUIZ.find((x) => x.q === q.prompt)!;
       assert.ok(q.response.type === "choice" && q.expected.type === "choice");
-      const right = q.response.choices.find((c) => c.id === (q.expected.type === "choice" ? q.expected.id : ""))!;
+      const wantId = q.expected.id;
+      const right = q.response.choices.find((c) => c.id === wantId)!;
       assert.equal(right.label, String(src.choices[src.answer - 1]));
       assert.deepEqual(q.response.choices.map((c) => c.label).sort(), src.choices.map(String).sort());
       assert.ok(q.explain.includes(right.label));

@@ -53,6 +53,7 @@ function ModeChip({ n, on, hz, note, color, onToggle }: { n: number; on: boolean
       type="button"
       aria-pressed={on}
       onClick={onToggle}
+      aria-label={`Harmonic ${n}, ${fmtHz(hz)}, about ${note}`}
       title={`Harmonic ${n}: ${fmtHz(hz)}`}
       className={cx("flex flex-col items-center rounded-xl border px-1.5 pt-1 pb-1.5 text-center transition-colors", on ? "border-line-strong bg-panel shadow-sm" : "border-line bg-raised/60 opacity-70 hover:opacity-100")}
     >
@@ -173,7 +174,7 @@ function excite(kind: "pluck" | "strike", p: number): { shape: number[]; sound: 
     }
   }
   const peak = Math.max(...sound, 1e-9);
-  const shapePeak = kind === "strike" ? Math.max(...shape.map(Math.abs), 1e-9) * 1.9 : 1;
+  const shapePeak = kind === "strike" ? Math.max(...shape.map(Math.abs), 1e-9) * 1.3 : 1;
   return { shape: shape.map((v) => v / shapePeak), sound: sound.map((v) => v / peak) };
 }
 
@@ -227,7 +228,7 @@ function Excited({ kind, baseMidi }: { kind: "pluck" | "strike"; baseMidi: numbe
     }
     return 0.9 * s;
   };
-  const missing = sound.slice(0, BARS).flatMap((v, i) => (v < 0.05 ? [i + 1] : []));
+  const missing = sound.slice(0, BARS).flatMap((v, i) => (v < 0.1 ? [i + 1] : []));
   const px = X0 + p * LEN;
   const verb = kind === "pluck" ? "Pluck" : "Strike";
 
@@ -240,7 +241,7 @@ function Excited({ kind, baseMidi }: { kind: "pluck" | "strike"; baseMidi: numbe
           <Button variant="primary" size="sm" onClick={go}>
             {verb}
           </Button>
-          <Slider label="Where" value={Math.round(p * 100)} min={5} max={95} onChange={(v) => setP(v / 100)} format={(v) => `${v}% along`} className="min-w-52 flex-1" />
+          <Slider label="Where" value={Math.round(p * 100)} min={5} max={95} onChange={(v) => setP(v / 100)} format={(v) => `${v}%`} className="min-w-52 flex-1" />
           <div className="flex flex-wrap gap-1">
             {SPOTS.map((s) => (
               <Button key={s.label} size="sm" variant="ghost" onClick={() => setP(s.p)}>
@@ -275,7 +276,7 @@ function Excited({ kind, baseMidi }: { kind: "pluck" | "strike"; baseMidi: numbe
             (dragging || still) && <circle cx={px} cy={MID - 0.9 * AMP} r={9} fill="var(--accent)" stroke="var(--panel)" strokeWidth={2.5} />
           ) : (
             <g transform={`translate(${px}, ${MID + (still ? 16 : 30)})`}>
-              <rect x={-3} y={14} width={6} height={54} rx={2} fill="var(--line-strong)" />
+              <rect x={-3} y={14} width={6} height={32} rx={2} fill="var(--line-strong)" />
               <path d="M-13,16 Q-14,0 0,-4 Q14,0 13,16 Z" fill="var(--accent)" stroke="var(--panel)" strokeWidth={2} />
             </g>
           )}
@@ -292,7 +293,7 @@ function Excited({ kind, baseMidi }: { kind: "pluck" | "strike"; baseMidi: numbe
               return (
                 <g key={i}>
                   <rect x={10 + i * bw} y={122 - h} width={bw - 5} height={Math.max(h, 0.5)} rx={2.5} fill={harmonicColor(baseMidi, i + 1)} />
-                  {v < 0.05 && <rect x={10 + i * bw} y={104} width={bw - 5} height={18} rx={2.5} fill="none" stroke="var(--line-strong)" strokeDasharray="2 2" />}
+                  {v < 0.1 && <rect x={10 + i * bw} y={104} width={bw - 5} height={18} rx={2.5} fill="none" stroke="var(--line-strong)" strokeDasharray="2 2" />}
                   <text x={10 + i * bw + (bw - 5) / 2} y={138} textAnchor="middle" fontSize={11} fill="var(--fg-3)">
                     {i + 1}
                   </text>
@@ -305,7 +306,7 @@ function Excited({ kind, baseMidi }: { kind: "pluck" | "strike"; baseMidi: numbe
       </div>
       <p className="mt-2 text-sm text-fg-2">
         {missing.length > 0
-          ? `${verb === "Pluck" ? "Plucked" : "Struck"} here, harmonic${missing.length > 1 ? "s" : ""} ${missing.join(", ")} ${missing.length > 1 ? "are" : "is"} missing: ${missing.length > 1 ? "they have" : "it has"} a still point (a node) exactly at this spot, so nothing here can set ${missing.length > 1 ? "them" : "it"} moving.`
+          ? `${verb === "Pluck" ? "Plucked" : "Struck"} here, harmonic${missing.length > 1 ? "s" : ""} ${missing.join(", ")} ${missing.length > 1 ? "are" : "is"} missing or very weak: ${missing.length > 1 ? "they have" : "it has"} a still point (a node) at or right beside this spot, and a push at a still point cannot set ${missing.length > 1 ? "them" : "it"} moving.`
           : p < 0.15 || p > 0.85
             ? "Near the end, the high harmonics are strong: the sound is bright and thin."
             : "Every harmonic is present here, the low ones strongest: a round, full sound."}

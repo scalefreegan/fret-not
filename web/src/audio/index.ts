@@ -414,7 +414,7 @@ export function pluckPartials(fundamentalHz: number, amplitudes: readonly number
     const g = ac.createGain();
     osc.frequency.value = f;
     g.gain.setValueAtTime(0, t0);
-    g.gain.linearRampToValueAtTime(a * PARTIAL_LEVEL * 1.6, t0 + 0.003);
+    g.gain.linearRampToValueAtTime(a * PARTIAL_LEVEL * 1.1, t0 + 0.003);
     g.gain.setTargetAtTime(0, t0 + 0.003, decay / (1 + damping * i));
     osc.connect(g).connect(out);
     osc.start(t0);
@@ -453,7 +453,9 @@ export function pluckPartials(fundamentalHz: number, amplitudes: readonly number
  *  and spectrum. Uses the recordings for piano and guitar when they can be
  *  loaded (waits for them), the synth otherwise. */
 export async function renderNote(midi: number, timbre: Timbre, seconds = 0.6): Promise<{ samples: Float32Array; sampleRate: number; sampled: boolean }> {
-  const sampled = isSampled(timbre) ? await loadSamples(audioContext(), timbre) : false;
+  // Decode with a throwaway context when the live one does not exist yet, so
+  // drawing a spectrum on page load does not start audio before a user gesture.
+  const sampled = isSampled(timbre) ? await loadSamples(ctx ?? new OfflineAudioContext(1, 1, 44100), timbre) : false;
   const sampleRate = 44100;
   const off = new OfflineAudioContext(1, Math.ceil(sampleRate * seconds), sampleRate);
   buildVoice(off, off.destination, { midi, timbre, t0: 0, duration: seconds, velocity: 0.8 });

@@ -1,3 +1,4 @@
+import { ErrorBoundary } from "../ErrorBoundary.tsx";
 import { WidgetFrame } from "../ui.tsx";
 import { Consonance, FrequencyExplorer, HarmonicMixer, InstrumentAnatomy, Scope, StringSim, TimbreCompare } from "./sound/index.tsx";
 import type { Widget, WidgetProps } from "./types.ts";
@@ -20,7 +21,11 @@ export const WIDGET_COMPONENTS: Record<string, Widget> = {
 export function RenderWidget({ type, params }: { type: string } & WidgetProps) {
   const C = WIDGET_COMPONENTS[type];
   if (!C) return <WidgetFrame title={type}>This widget is not built yet.</WidgetFrame>;
-  return <C params={params} />;
+  return (
+    <ErrorBoundary label={`${type} widget`}>
+      <C params={params} />
+    </ErrorBoundary>
+  );
 }
 
 /** Example parameters for every widget: the dev gallery (#/gallery) renders

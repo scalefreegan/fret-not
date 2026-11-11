@@ -18,7 +18,9 @@ export function useReducedMotion(): boolean {
 /** Call `frame(seconds since start)` every animation frame while `active`. */
 export function useRaf(frame: (t: number) => void, active: boolean): void {
   const ref = useRef(frame);
-  ref.current = frame;
+  useEffect(() => {
+    ref.current = frame;
+  });
   useEffect(() => {
     if (!active) return;
     let id = 0;

@@ -110,15 +110,18 @@ export function Consonance({ params }: WidgetProps) {
         <g transform="translate(0,128)">
           <path d={wavePath((x) => 0.5 * (low(x) + high(x)), W, 100, 44, 1200)} fill="none" stroke="var(--ink)" strokeWidth={2.4} strokeLinejoin="round" />
         </g>
-        <text x={6} y={16} fontSize={12} fill="var(--fg-2)">
-          lower
-        </text>
-        <text x={6} y={78} fontSize={12} fill="var(--fg-2)">
-          upper
-        </text>
-        <text x={6} y={144} fontSize={12} fill="var(--fg-2)">
-          both added together
-        </text>
+        {[
+          { y: 16, w: 44, text: "lower" },
+          { y: 78, w: 46, text: "upper" },
+          { y: 144, w: 132, text: "both added together" },
+        ].map((l) => (
+          <g key={l.text}>
+            <rect x={3} y={l.y - 13} width={l.w} height={18} rx={5} fill="var(--panel)" opacity={0.85} />
+            <text x={8} y={l.y} fontSize={12} fontWeight={600} fill="var(--fg-2)">
+              {l.text}
+            </text>
+          </g>
+        ))}
         <text x={Math.min(repeatW, W) - 6} y={242} textAnchor="end" fontSize={12} fontWeight={600} fill="var(--accent)">
           {repeatW <= W ? "one full pattern" : "the pattern has not repeated yet"}
         </text>

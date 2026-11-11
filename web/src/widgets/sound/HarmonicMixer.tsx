@@ -49,9 +49,11 @@ export function HarmonicMixer({ params }: WidgetProps) {
     });
   };
 
-  const total = amps.reduce((s, a) => s + Math.abs(a), 0);
-  const scale = 1 / Math.max(1, total * 0.62);
-  const wave = (x: number) => scale * amps.reduce((s, a, i) => s + a * Math.sin(2 * Math.PI * (i + 1) * 2 * x), 0);
+  const raw = (x: number) => amps.reduce((s, a, i) => s + a * Math.sin(2 * Math.PI * (i + 1) * 2 * x), 0);
+  // Fit the tallest point of the wave to the frame, but never magnify a quiet mix.
+  let peak = 1;
+  for (let i = 0; i < 400; i++) peak = Math.max(peak, Math.abs(raw(i / 800)));
+  const wave = (x: number) => raw(x) / peak;
   const color = (n: number) => pcColor(Math.round(midiOfFreq(f0 * n)));
 
   return (
@@ -75,10 +77,8 @@ export function HarmonicMixer({ params }: WidgetProps) {
         <line x1={0} x2={640} y1={85} y2={85} stroke="var(--line)" strokeDasharray="3 5" />
         <line x1={320} x2={320} y1={12} y2={158} stroke="var(--line)" strokeDasharray="3 5" />
         <path d={wavePath(wave, 640, 170, 68, 480)} fill="none" stroke="var(--ink)" strokeWidth={2.8} strokeLinejoin="round" />
-        <text x={8} y={164} fontSize={12} fill="var(--fg-3)">
-          two cycles of the wave: {(2000 / f0).toFixed(1)} thousandths of a second
-        </text>
       </svg>
+      <p className="text-center text-xs text-fg-3">Two cycles of the combined wave ({(2000 / f0).toFixed(1)} thousandths of a second)</p>
       <div className="mt-3 flex justify-between gap-1 @lg:gap-2">
         {amps.map((a, i) => {
           const n = i + 1;
