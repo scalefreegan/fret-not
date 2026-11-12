@@ -1,23 +1,35 @@
 import { useMemo } from "react";
 import type { Lesson } from "../../shared/content.ts";
-import { dueConcepts, isMastered, levelStatuses, nextLesson, UNLOCK_FRACTION } from "../../shared/progress.ts";
+import { dueConcepts, isMastered, lessonState, levelStatuses, nextLesson, reviewableConcepts, UNLOCK_FRACTION } from "../../shared/progress.ts";
 import { go, href } from "../router.ts";
-import { useAppData } from "../state.tsx";
+import { useAppData } from "../app-data.ts";
 import { Button, Card, cx } from "../ui.tsx";
 
 // The path: every level, its lessons in three columns (theory, piano,
 // guitar), what is done, what is next, and what is due for review.
 
-function LessonRow({ lesson, done, isNext, locked }: { lesson: Lesson; done: boolean; isNext: boolean; locked: boolean }) {
+/** `state`: "attempted" is a batch finished below the pass mark (two right
+ *  out of eleven is not "done"): shown as tried, with its best score, not
+ *  with the green tick. */
+function LessonRow({ lesson, state, best, isNext, locked }: { lesson: Lesson; state: "new" | "attempted" | "done"; best: number; isNext: boolean; locked: boolean }) {
+  const done = state !== "new";
+  const weak = state === "attempted";
   return (
     <a
       href={locked ? undefined : href("lesson", lesson.id)}
       aria-disabled={locked}
       title={lesson.summary}
-      className={cx("group flex items-center gap-2.5 rounded-lg px-2.5 py-1.5 transition-colors", locked ? "cursor-not-allowed opacity-50" : "hover:bg-raised", isNext && "bg-accent-soft")}
+      className={cx("group flex items-center gap-2.5 rounded-lg px-2.5 py-1.5 transition-colors pointer-coarse:min-h-11 pointer-coarse:items-start pointer-coarse:py-2", locked ? "cursor-not-allowed opacity-50" : "hover:bg-raised active:bg-raised", isNext && "bg-accent-soft")}
     >
-      <span className={cx("flex h-5 w-5 shrink-0 items-center justify-center rounded-full border-2 text-[0.7rem] font-bold", done ? "border-good bg-good text-panel" : isNext ? "border-accent" : "border-line-strong")}>{done ? "✓" : ""}</span>
-      <span className={cx("min-w-0 flex-1 truncate", done ? "text-fg-2" : "font-medium text-fg")}>{lesson.title}</span>
+      <span aria-hidden="true" className={cx("flex h-5 w-5 shrink-0 items-center justify-center rounded-full border-2 text-[0.7rem] font-bold", done && weak ? "border-warn text-warn" : done ? "border-good bg-good text-panel" : isNext ? "border-accent" : "border-line-strong")}>{done ? (weak ? "~" : "✓") : ""}</span>
+      {done && <span className="sr-only">{weak ? `Tried, best ${Math.round(best * 100)}%, not done yet: ` : "Done: "}</span>}
+      {/* A mouse gets the summary as a tooltip. A finger cannot hover, so on
+          a touch screen the title wraps in full and the summary sits under it. */}
+      <span className="min-w-0 flex-1">
+        <span className={cx("block truncate pointer-coarse:overflow-visible pointer-coarse:whitespace-normal", done && !weak ? "text-fg-2" : "font-medium text-fg")}>{lesson.title}</span>
+        <span className="hidden text-sm leading-snug text-fg-3 pointer-coarse:block">{lesson.summary}</span>
+      </span>
+      {weak && !isNext && <span aria-hidden="true" className="text-xs font-semibold text-warn">best {Math.round(best * 100)}%</span>}
       {isNext && <span className="text-xs font-bold text-accent">NEXT</span>}
     </a>
   );
@@ -29,14 +41,14 @@ export function HomePage() {
   if (!content) return null;
   const statuses = levelStatuses(content, progress);
   const next = nextLesson(content, progress);
-  const due = dueConcepts(progress, now);
+  const due = dueConcepts(progress, now, reviewableConcepts(content));
   const started = Object.keys(progress.lessons).length > 0 || progress.placedLevel > 0;
   const mastered = content.concepts.filter((c) => isMastered(progress.concepts[c.id])).length;
 
   return (
-    <div className="mx-auto max-w-5xl px-5 pt-8 pb-24">
+    <div className="mx-auto max-w-5xl px-4 pt-6 pb-24 sm:px-5 sm:pt-8">
       <section className="grid gap-4 @container md:grid-cols-[1.5fr_1fr]">
-        <Card className="flex flex-col justify-between gap-4 px-6 py-5">
+        <Card className="flex flex-col justify-between gap-4 px-4 py-5 sm:px-6">
           <div>
             <p className="text-sm font-bold tracking-wide text-accent uppercase">{started ? "Continue" : "Start here"}</p>
             {next ? (
@@ -56,7 +68,7 @@ export function HomePage() {
             {!started && <Button variant="ghost" onClick={() => go("placement")}>I already know some of this: place me</Button>}
           </div>
         </Card>
-        <Card className="flex flex-col justify-between gap-3 px-6 py-5">
+        <Card className="flex flex-col justify-between gap-3 px-4 py-5 sm:px-6">
           <div>
             <p className="text-sm font-bold tracking-wide text-fg-3 uppercase">Review</p>
             <p className="mt-1 font-display text-3xl font-bold text-fg">{due.length ? `${due.length} due` : "Nothing due"}</p>
@@ -70,7 +82,7 @@ export function HomePage() {
         <Card className="mt-4 border-warn bg-warn-soft px-5 py-3">
           <p className="font-semibold text-fg">Content problems ({content.problems.length})</p>
           <p className="text-sm text-fg-2">These files were refused by the loader and are not shown. Fix them, or ask the Tutor to.</p>
-          <ul className="mt-1 list-disc pl-5 font-mono text-xs text-fg-2">
+          <ul className="mt-1 list-disc pl-5 font-mono text-xs break-words text-fg-2">
             {content.problems.slice(0, 12).map((p, i) => (
               <li key={i}>{p.file}: {p.message}</li>
             ))}
@@ -81,9 +93,16 @@ export function HomePage() {
       {content.levels.map((level) => {
         const st = statuses.find((s) => s.level === level.id)!;
         const lessons = content.lessons.filter((l) => l.level === level.id);
-        const prevSt = statuses.find((s) => s.level === level.id - 1);
         const outline = level.status === "outline";
-        const need = prevSt ? Math.max(0, Math.ceil(prevSt.total * UNLOCK_FRACTION) - prevSt.mastered) : 0;
+        // The level that gates this one is the nearest earlier level with
+        // something to master, which is not always the one just before.
+        const target = Math.ceil(st.gateTotal * UNLOCK_FRACTION - 1e-9);
+        const need = Math.max(0, target - st.gateMastered);
+        // Which concepts the count is over: the theory plus the instrument(s)
+        // this learner is furthest along with, not every concept of the level
+        // (which is what the "n/m mastered" bar beside the heading counts).
+        const trackNames = st.gateTracks.map((t) => (t === "core" ? "theory" : (content.tracks.find((x) => x.id === t)?.title ?? t).toLowerCase()));
+        const over = trackNames.length > 1 ? `${trackNames.slice(0, -1).join(", ")} and ${trackNames[trackNames.length - 1]}` : (trackNames[0] ?? "");
         return (
           <section key={level.id} className="mt-8">
             <div className="flex flex-wrap items-end justify-between gap-x-6 gap-y-1">
@@ -114,10 +133,10 @@ export function HomePage() {
               <>
                 {!st.unlocked && (
                   <p className="mt-2 rounded-lg bg-raised px-3 py-2 text-sm text-fg-2">
-                    Locked. Master {need} more concept{need === 1 ? "" : "s"} in level {level.id - 1} to open it, or <a className="font-semibold underline" href={href("placement")}>take the placement check</a>.
+                    Locked. {st.gate !== null ? `It opens when ${target} of level ${st.gate}'s ${st.gateTotal} ${over} concepts are mastered: you have ${st.gateMastered}, so ${need} more. Or ` : "To open it, "}<a className="font-semibold underline pointer-coarse:inline-flex pointer-coarse:min-h-11 pointer-coarse:items-center" href={href("placement")}>take the placement check</a>.
                   </p>
                 )}
-                <Card className="mt-3 grid gap-x-4 gap-y-3 px-3 py-3 md:grid-cols-3">
+                <Card className="mt-3 grid gap-x-4 gap-y-3 px-2 py-3 sm:px-3 md:grid-cols-3">
                   {content.tracks.map((track) => {
                     const mine = lessons.filter((l) => l.track === track.id);
                     return (
@@ -125,7 +144,7 @@ export function HomePage() {
                         <p className="px-2.5 pb-1 text-xs font-bold tracking-wide text-fg-3 uppercase">{track.id === "core" ? "Theory" : track.title}</p>
                         {mine.length === 0 && <p className="px-2.5 text-sm text-fg-3">—</p>}
                         {mine.map((l) => (
-                          <LessonRow key={l.id} lesson={l} done={!!progress.lessons[l.id]} isNext={next?.id === l.id} locked={!st.unlocked} />
+                          <LessonRow key={l.id} lesson={l} state={lessonState(progress.lessons[l.id])} best={progress.lessons[l.id]?.bestScore ?? 0} isNext={next?.id === l.id} locked={!st.unlocked} />
                         ))}
                       </div>
                     );
@@ -139,9 +158,9 @@ export function HomePage() {
 
       {started && (
         <p className="mt-10 text-center text-sm text-fg-3">
-          <button type="button" className="underline hover:text-fg" onClick={() => { if (window.confirm("Start over? Your current progress is archived in data/profiles/default/, not deleted.")) void reset(); }}>Reset progress</button>
+          <button type="button" className="min-h-11 px-2 py-3 underline hover:text-fg" onClick={() => { if (window.confirm("Start over? Your current progress is archived in data/profiles/default/, not deleted.")) void reset(); }}>Reset progress</button>
           {" · "}
-          <a className="underline hover:text-fg" href={href("placement")}>Placement check</a>
+          <a className="inline-flex min-h-11 items-center px-2 py-3 underline hover:text-fg" href={href("placement")}>Placement check</a>
         </p>
       )}
     </div>

@@ -9,6 +9,7 @@ summary: Two notes blend when their frequencies form a simple ratio, because the
 exercises:
   - kind: ear-interval
     concept: consonance
+    vocab: plain
     title: Octave, fifth or clash
     count: 6
     intervals: [P8, P5, m2]
@@ -34,7 +35,7 @@ exercises:
         answer: 2
         explain: With a ratio like 3 to 2, every third harmonic of the lower note meets every second harmonic of the upper note. Shared harmonics mean no clashing.
       - q: Two harmonics sit very close together but not on the same frequency, such as 440 Hz and 452 Hz. What do you hear?
-        choices: [Silence, A rough, pulsing wobble, A note one octave higher]
+        choices: [Silence, "A rough, pulsing wobble", A note one octave higher]
         answer: 2
         explain: Near-miss frequencies drift in and out of step, which we hear as beating. A lot of fast beating sounds rough.
       - q: Is dissonance a mistake in music?

@@ -25,7 +25,7 @@ exercises:
     count: 5
     questions:
       - q: Which string is string 1?
-        choices: [The thinnest, highest-sounding string, The thickest, lowest-sounding string, The one in the middle]
+        choices: ["The thinnest, highest-sounding string", "The thickest, lowest-sounding string", The one in the middle]
         answer: 1
         explain: Strings are numbered from the thinnest. String 1 is the high E and string 6 is the low E.
       - q: What are the open strings from string 6 to string 1?
@@ -92,7 +92,7 @@ Fretboard pictures in this app show the neck as it appears in guitar tab: the **
 
 ## The open strings among the other notes
 
-Here are the same six notes on a keyboard as well. Click each open string and see where it falls.
+Here are the same six notes on a keyboard as well. Press each open string and see where it falls.
 
 ```widget
 type: linked

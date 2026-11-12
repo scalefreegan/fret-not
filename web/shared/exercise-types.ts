@@ -52,23 +52,39 @@ export type ResponseSpec =
   | { type: "choice"; choices: Choice[] }
   /** Play on the virtual keyboard. `single` submits on the first key;
    *  `sequence` collects keys in order until `length` are played; `set`
-   *  toggles keys on and off until the learner presses Check. */
-  | { type: "keyboard"; range: [number, number]; mode: "single" | "sequence" | "set"; length?: number; labels?: "none" | "c" | "naturals" | "all"; marked?: number[] }
+   *  toggles keys on and off until the learner presses Check. `labels:
+   *  "landmarks"` names only the C keys with their octave and marks middle C:
+   *  what a question graded on the exact octave needs to be answerable. */
+  | { type: "keyboard"; range: [number, number]; mode: "single" | "sequence" | "set"; length?: number; labels?: "none" | "c" | "landmarks" | "naturals" | "all"; marked?: number[] }
   /** The same on the virtual fretboard. */
   | { type: "fretboard"; maxFret: number; mode: "single" | "sequence" | "set"; length?: number; labels?: "none" | "open" | "naturals" | "all"; marked?: FretPos[] }
   /** Tap the space bar in time after a count-in. */
-  | { type: "tap"; pattern: string; time: string; tempo: number; countInBeats: number };
+  /** `countInBeats`: the length of the count-in in quarter-note beats.
+   *  `clickBeats`: quarter-note beats between metronome clicks (absent = 1),
+   *  so the count-in is countInBeats / clickBeats clicks: six in 6/8. */
+  | { type: "tap"; pattern: string; time: string; tempo: number; countInBeats: number; clickBeats?: number };
 
 export type Expected =
   | { type: "choice"; id: string }
   /** `match: "exact"` compares MIDI numbers, `"pc"` ignores the octave.
-   *  `ordered` compares as a sequence, otherwise as a set. */
-  | { type: "notes"; midis: number[]; match: "exact" | "pc"; ordered: boolean }
-  /** Guitar: the fretted positions must spell this chord (any voicing). */
-  | { type: "chord-shape"; symbol: string }
+   *  `ordered` compares as a sequence, otherwise as a set.
+   *  `positions`: on the fretboard the answer must be played at exactly these
+   *  places (a tab names a string and a fret, not just a pitch).
+   *  `alsoAccept`: for a one-note answer, other MIDI notes that are equally
+   *  right (`midis` stays the one shown as the answer). */
+  | { type: "notes"; midis: number[]; match: "exact" | "pc"; ordered: boolean; positions?: FretPos[]; alsoAccept?: number[] }
+  /** Guitar: the fretted positions must spell this chord: any voicing a hand
+   *  can reach with the root lowest (see positionsSpellChord). With `exact`
+   *  the answer must be the stored shape itself, string for string: the
+   *  learner was shown its diagram and asked to copy it. */
+  | { type: "chord-shape"; symbol: string; exact?: boolean }
   /** Onset times in quarter-note beats from the first beat after the
-   *  count-in; each tap must fall within `toleranceBeats` of its onset. */
-  | { type: "taps"; onsets: number[]; toleranceBeats: number };
+   *  count-in. Tap `i` must fall within `tolerances[i]` beats of `onsets[i]`:
+   *  each note's window is limited by its own nearest neighbour, so a pair of
+   *  sixteenths is tight and a half note in the same pattern is not.
+   *  `toleranceBeats` is the smallest of them, for a reader that wants one
+   *  number; when `tolerances` is absent it applies to every onset. */
+  | { type: "taps"; onsets: number[]; toleranceBeats: number; tolerances?: number[] };
 
 export type Given =
   | { type: "choice"; id: string }

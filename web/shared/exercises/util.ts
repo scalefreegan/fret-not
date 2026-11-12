@@ -1,9 +1,9 @@
 import type { ExerciseDecl } from "../content.ts";
 import type { Choice, Question, Sound, SoundEvent, Timbre } from "../exercise-types.ts";
-import { intervalName, semitones } from "../music/intervals.ts";
-import { fretMidi, openStringMidi, type FretPos } from "../music/instruments.ts";
-import { fromMidi, isBlackKey, isPitch, midiOf, pc, pcNameOf, pitchLabel, type Pitch } from "../music/notes.ts";
-import { parseDuration, parseTime, type Duration } from "../music/rhythm.ts";
+import { intervalName, semitones, transpose } from "../music/intervals.ts";
+import { fretMidi, GUITAR_FRETS, openStringMidi, type FretPos } from "../music/instruments.ts";
+import { fromMidi, isBlackKey, isPitch, midiOf, pc, pcLabel, pcNameOf, pitchLabel, toMidi, type Pitch } from "../music/notes.ts";
+import { isTime, parseDuration, parseTime, startsOnGrid, type Duration } from "../music/rhythm.ts";
 import { staffPosition, type Clef } from "../music/staff.ts";
 
 // Shared pieces for the question generators: the seeded random source,
@@ -186,8 +186,46 @@ export function posWhere(pos: FretPos): string {
 export function spell(rng: Rng, midi: number): Pitch {
   return fromMidi(midi, rng() < 0.5 ? "sharp" : "flat");
 }
+/** E♯, B♯, F♭ and C♭ are white keys under another name: real, but not
+ *  beginner reading material. */
+export function isWhiteKeyRespelled(letter: string, acc: number): boolean {
+  return (acc === 1 && (letter === "E" || letter === "B")) || (acc === -1 && (letter === "F" || letter === "C"));
+}
+/** Two sounding notes an interval apart, spelled so the letters agree with
+ *  the interval named: a minor third above C is E♭ (not D♯), a major third
+ *  above D♭ is F (not "C♯ to F", which is written as a fourth). Of the two
+ *  ways to spell a black lower note, the one with the plainer upper note. */
+export function spellPair(lo: number, iv: string): [Pitch, Pitch] {
+  const cost = (p: Pitch) => Math.abs(p.acc) * 2 + (isWhiteKeyRespelled(p.letter, p.acc) ? 3 : 0);
+  const pairs = [fromMidi(lo, "sharp"), fromMidi(lo, "flat")].map((r) => [r, transpose(r, iv)] as [Pitch, Pitch]);
+  return pairs.sort((a, b) => cost(a[1]) + Math.abs(a[0].acc) - (cost(b[1]) + Math.abs(b[0].acc)))[0];
+}
 export function midiLabel(midi: number, prefer: "sharp" | "flat" = "sharp"): string {
   return pitchLabel(fromMidi(midi, prefer));
+}
+
+// --- vocabulary ---------------------------------------------------------------
+// An explanation may only use words the learner has met. The `vocab`
+// parameter of an exercise says how far the curriculum has got:
+//   plain    nothing yet: no note names, no half steps, no interval names
+//   letters  the seven letter names; a black key is described by where it is
+//   names    letters with sharps and flats, and half steps; no octave numbers
+//   full     everything (the default): octave numbers and interval names
+
+export type Vocab = "plain" | "letters" | "names" | "full";
+export const VOCABS: readonly Vocab[] = ["plain", "letters", "names", "full"];
+export function vocabOf(p: Params): Vocab {
+  const v = pStr(p, "vocab", "full");
+  return (VOCABS as readonly string[]).includes(v) ? (v as Vocab) : "full";
+}
+/** A note as the learner can be told it at this vocabulary: "C♯4", "C♯",
+ *  "the black key between C and D" (or the fretboard place), or "" at `plain`. */
+export function sayNote(pitch: Pitch, vocab: Vocab, where?: FretPos): string {
+  if (vocab === "full") return pitchLabel(pitch);
+  if (vocab === "names") return pcLabel(pitch);
+  if (vocab === "plain") return "";
+  if (pitch.acc === 0) return pcLabel(pitch);
+  return where ? `the note at ${posWhere(where)}` : keyWhere(toMidi(pitch));
 }
 
 // --- keyboard and fretboard helpers ----------------------------------------
@@ -208,7 +246,7 @@ export const ALL_STRINGS = [6, 5, 4, 3, 2, 1];
 export function fretCandidates(strings: number[], maxFret: number, range: [number, number] | null, accidentals: boolean): FretPos[] {
   const valid = uniq(strings.filter((s) => Number.isInteger(s) && s >= 1 && s <= 6));
   const use = valid.length ? valid : ALL_STRINGS;
-  const top = Math.max(0, Math.min(24, Math.floor(maxFret)));
+  const top = Math.max(0, Math.min(GUITAR_FRETS, Math.floor(maxFret)));
   const all: FretPos[] = [];
   for (const string of use) for (let fret = 0; fret <= top; fret++) all.push({ string, fret });
   const natural = (x: FretPos) => accidentals || !isBlackKey(fretMidi(x));
@@ -246,27 +284,34 @@ export function durationTokens(values: unknown[]): string[] {
   return out.length ? out : ["q"];
 }
 
-/** Fill exactly one bar from `values`. When the values cannot fill it (e.g.
- *  only whole notes in 3/4) the plain note values are allowed in as well; a
- *  sixteenth always fits, so this terminates. */
-export function fillBar(rng: Rng, values: string[], barBeats: number, minEvents = 1): string[] {
-  const attempt = (pool: string[]): string[] | null => {
-    for (let tries = 0; tries < 30; tries++) {
+/** Fill exactly one bar of `time` from `values`. Unless `syncopation`, every
+ *  note starts on its grid (startsOnGrid): nothing longer than an eighth
+ *  begins off the beat. The loader refuses values that cannot fill a bar
+ *  (canFillBar), so the wider pools below are only a net for a stray
+ *  declaration; a sixteenth always fits, so this terminates. */
+export function fillBar(rng: Rng, values: string[], time: string, opts: { minEvents?: number; syncopation?: boolean } = {}): string[] {
+  const barBeats = barBeatsOf(time);
+  const minEvents = opts.minEvents ?? 1;
+  const safeTime = isTime(time) ? time : "4/4";
+  const attempt = (pool: string[], aligned: boolean): string[] | null => {
+    const durs = pool.map((t) => ({ t, d: parseDuration(t) }));
+    for (let tries = 0; tries < 60; tries++) {
       const out: string[] = [];
-      let left = barBeats;
-      while (left > 1e-9) {
-        const fits = pool.filter((t) => parseDuration(t).beats <= left + 1e-9);
+      let at = 0;
+      while (barBeats - at > 1e-9) {
+        const fits = durs.filter(({ d }) => d.beats <= barBeats - at + 1e-9 && (!aligned || startsOnGrid(d, at, safeTime)));
         if (!fits.length) break;
-        const t = pick(rng, fits);
+        const { t, d } = pick(rng, fits);
         out.push(t);
-        left -= parseDuration(t).beats;
+        at += d.beats;
       }
-      if (Math.abs(left) < 1e-9 && out.length >= minEvents && out.some((t) => !parseDuration(t).rest)) return out;
+      if (Math.abs(barBeats - at) < 1e-9 && out.length >= minEvents && out.some((t) => !parseDuration(t).rest)) return out;
     }
     return null;
   };
+  const aligned = !opts.syncopation;
   const wide = uniq([...values, ...STANDARD_VALUES]);
-  return attempt(values) ?? attempt(wide) ?? attempt(wide.filter((t) => parseDuration(t).beats < barBeats)) ?? attempt(["s"]) ?? ["s"];
+  return attempt(values, aligned) ?? attempt(values, false) ?? attempt(wide, aligned) ?? attempt(wide, false) ?? attempt(wide.filter((t) => parseDuration(t).beats < barBeats), false) ?? attempt(["s"], false) ?? ["s"];
 }
 export function barBeatsOf(time: string): number {
   try {

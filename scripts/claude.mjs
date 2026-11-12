@@ -1,12 +1,27 @@
 // Headless Claude Code CLI wrapper — the Tutor's runtime (sibling pattern
-// from lingo-dojo / travel-guide / wine-guide). Spawns `claude -p`, stdin ignored
-// (the CLI stalls waiting on a piped stdin in -p mode), detached so the whole
-// process group can be killed (the CLI spawns children).
+// from lingo-dojo / travel-guide / wine-guide). Spawns `claude -p`, detached
+// so the whole process group can be killed (the CLI spawns children).
 //
-// The permissions are the whole point of this file. The agent may Read the
-// repo and may Write/Edit ONLY under content/; everything else is closed by
-// three layers (see buildArgs). It runs on the user's Claude Code login, never
-// an API key.
+// The prompt (the whole chat transcript) goes in on STDIN, from a temp file
+// opened read-only: `claude -p` with no prompt argument reads its prompt
+// there. It is not an argument because macOS caps the argument list at about
+// 1 MB (E2BIG) and a long conversation would one day cross it; and it is a
+// file rather than a pipe because the CLI stalls waiting on a piped stdin
+// that is left open, while a file simply ends.
+//
+// The run is read as it happens (`--output-format stream-json`): one JSON
+// object per line, the last of which is the same result envelope the plain
+// `json` format prints. The lines before it carry the agent's tool calls;
+// the paths of its Write/Edit calls are collected for the log and the tests.
+// (The server does not rely on them: it runs a writing turn in a git worktree
+// of its own and asks git what changed there — web/server/turn.ts.)
+//
+// The permissions are the whole point of this file. The agent may Read its
+// working directory and may Write/Edit ONLY under the content directory it
+// is given; everything else is closed by three layers (see buildArgs). A
+// turn that may not write gets the "read" profile: no Write or Edit tool
+// exists for it at all. It runs on the user's Claude Code login, never an
+// API key.
 
 import { spawn } from "node:child_process";
 import fs from "node:fs";
@@ -73,6 +88,9 @@ export function failureHint(text) {
  */
 export const TOOLS = ["Read", "Glob", "Grep", "Edit", "Write"];
 
+/** The tools of a read-only turn (the "read" profile). */
+export const READ_TOOLS = ["Read", "Glob", "Grep"];
+
 /**
  * Names denied outright (`--disallowedTools`), the second layer behind
  * `--tools`. Bash/WebFetch/WebSearch/NotebookEdit are the ones the brief names;
@@ -115,6 +133,22 @@ export function contentGrants(contentDir = contentRoot(), repoRoot = REPO_ROOT) 
 }
 
 /**
+ * Deny rules inside the grant above: nothing under a `.git` directory in the
+ * content tree (a nested repository's config can run commands when git is
+ * next used there). `--restricted` already leaves writes to git files to "a
+ * person or the configured permission handler", and there is neither, so this
+ * is a second lock on the same door; the server also discards a turn that
+ * wrote any dot-file (web/server/turn.ts).
+ */
+export function contentDenials(contentDir = contentRoot(), repoRoot = REPO_ROOT) {
+  const grants = contentGrants(contentDir, repoRoot); // validates the directory
+  const base = grants[0].slice("Edit(".length, -"/**)".length);
+  // Both a `.git` directory's contents and a FILE named `.git` (a gitlink,
+  // which points git at a directory of the writer's choosing).
+  return ["Edit", "Write"].flatMap((tool) => [`${tool}(${base}/.git)`, `${tool}(${base}/**/.git)`, `${tool}(${base}/.git/**)`, `${tool}(${base}/**/.git/**)`]);
+}
+
+/**
  * The argv for one run — pure, so the test pins the sandbox without spawning.
  *
  *   --restricted           ignores the user's, this repo's and local settings
@@ -133,25 +167,35 @@ export function contentGrants(contentDir = contentRoot(), repoRoot = REPO_ROOT) 
  *                          nothing to resume, so nothing written under
  *                          ~/.claude/projects per run.
  */
-export function buildArgs({ prompt, systemPrompt, model = DEFAULT_MODEL, maxTurns = 25, mcpConfigPath, contentDir, repoRoot, tools = "content" }) {
+export function buildArgs({ systemPrompt, model = DEFAULT_MODEL, maxTurns = 25, mcpConfigPath, contentDir, repoRoot, tools = "content" }) {
   if (!isAgentModel(model)) throw new Error(`unknown model: ${model}`);
-  if (tools !== "content" && tools !== "none") throw new Error(`unknown tool profile: ${tools}`);
+  if (tools !== "content" && tools !== "read" && tools !== "none") throw new Error(`unknown tool profile: ${tools}`);
+  // "read" is a turn that may look but not write: Edit and Write are not
+  // among its tools, so there is nothing to grant or scope.
   // "none" is a turn with no file access at all: `--tools ""` removes every
   // built-in tool and nothing is granted. Unused today; kept so a future
   // tool-less turn (a quick spoken hint, say) inherits the same sandbox.
   const toolArgs = tools === "none"
     ? ["--tools", ""]
-    : ["--tools", TOOLS.join(","), "--allowedTools", "Read", "Glob", "Grep", ...contentGrants(contentDir, repoRoot)];
+    : tools === "read"
+      ? ["--tools", READ_TOOLS.join(","), "--allowedTools", ...READ_TOOLS]
+      : ["--tools", TOOLS.join(","), "--allowedTools", "Read", "Glob", "Grep", ...contentGrants(contentDir, repoRoot)];
+  const denyPaths = tools === "content" ? contentDenials(contentDir, repoRoot) : [];
+  // A profile that cannot write still names the write tools as denied.
+  const denyTools = tools === "content" ? DENIED : [...DENIED, "Edit", "Write", "MultiEdit"];
+  // `-p` with no prompt argument: the prompt is read from stdin (startClaude).
+  // stream-json needs --verbose in print mode.
   const args = [
-    "-p", prompt,
-    "--output-format", "json",
+    "-p",
+    "--output-format", "stream-json",
+    "--verbose",
     "--max-turns", String(maxTurns),
     "--model", model,
     "--restricted",
     "--permission-prompts", "none",
     "--no-session-persistence",
     ...toolArgs,
-    "--disallowedTools", ...DENIED,
+    "--disallowedTools", ...denyTools, ...denyPaths,
   ];
   if (systemPrompt) args.push("--append-system-prompt", systemPrompt);
   if (mcpConfigPath) args.push("--mcp-config", mcpConfigPath, "--strict-mcp-config");
@@ -176,6 +220,50 @@ export function childEnv(env = process.env) {
 
 /* --------------------------------- running -------------------------------- */
 
+/** The tools that write a file, and where each names it. */
+const WRITE_TOOLS = { Write: "file_path", Edit: "file_path", MultiEdit: "file_path", NotebookEdit: "notebook_path" };
+
+/**
+ * The file paths one line of the stream asks to write: every Write/Edit tool
+ * call in an `assistant` message. The call is reported before it runs (and a
+ * denied call is reported too), so this is "may have written", never "did" —
+ * the server compares with what actually changed on disk.
+ */
+export function toolWrites(line) {
+  let msg;
+  try { msg = JSON.parse(line); } catch { return []; }
+  const blocks = msg && msg.type === "assistant" && msg.message && Array.isArray(msg.message.content) ? msg.message.content : [];
+  const out = [];
+  for (const b of blocks) {
+    if (!b || b.type !== "tool_use" || !Object.hasOwn(WRITE_TOOLS, b.name)) continue;
+    const p = b.input && b.input[WRITE_TOOLS[b.name]];
+    if (typeof p === "string" && p) out.push(p);
+  }
+  return out;
+}
+
+/**
+ * The result envelope in a run's stdout: the whole output when it is one JSON
+ * object (`--output-format json`), else the last `{"type":"result"}` line of
+ * a stream (`stream-json`). null when there is none (the run died first).
+ */
+export function resultEnvelope(stdout) {
+  try {
+    const whole = JSON.parse(stdout);
+    if (whole && typeof whole === "object" && !Array.isArray(whole)) return whole;
+  } catch { /* not a single envelope */ }
+  const lines = stdout.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i].trim();
+    if (!line.startsWith("{")) continue;
+    try {
+      const obj = JSON.parse(line);
+      if (obj && obj.type === "result") return obj;
+    } catch { /* a torn line */ }
+  }
+  return null;
+}
+
 /**
  * Classify a finished CLI run — pure, so the trickiest branching in this file
  * is testable without spawning anything. Returns
@@ -184,8 +272,7 @@ export function childEnv(env = process.env) {
 export function classifyExit({ code, stdout, stderr }) {
   // The CLI can exit 0 with is_error inside the JSON wrapper, or exit
   // non-zero with the real message in the wrapper's `result`.
-  let wrapper = null;
-  try { wrapper = JSON.parse(stdout); } catch { /* not a JSON envelope */ }
+  const wrapper = resultEnvelope(stdout);
   if (code !== 0 || (wrapper && wrapper.is_error)) {
     // ERROR envelopes carry `errors[]`, not `result` — subtypes like
     // error_max_turns say what went wrong ONLY there.
@@ -208,38 +295,127 @@ export function classifyExit({ code, stdout, stderr }) {
 
 // Agents are spawned detached (own process group), so nothing kills them for
 // free when THIS process dies — a SIGTERM'd server (the Mac app's Quit, a
-// pkill) would orphan an in-flight agent to keep editing content/ with no
-// owner. Track every live kill handle and reap them on fatal signals.
-const liveKills = new Set();
-let reaperArmed = false;
+// pkill) would orphan an in-flight agent to keep running (and billing) with
+// no owner. Track every live kill handle and reap them on fatal signals.
+//
+// The set lives on globalThis, not in this module: Vite re-evaluates server
+// modules when one is edited, and a fresh module-level Set would forget the
+// agents the previous copy started (and arm a second set of handlers).
+const reaper = (globalThis.__fretNotReaper ??= { liveKills: new Set(), armed: false, hooks: new Set() });
+reaper.hooks ??= new Set();
+const liveKills = reaper.liveKills;
+
+/**
+ * Register a SYNCHRONOUS function to run on a fatal signal, after the live
+ * agents have been killed and before anything can end the process. The
+ * server uses it to delete a half-finished tutor turn's worktree: Vite's own
+ * SIGTERM handler exits as soon as the HTTP server has closed, and an async
+ * cleanup would lose that race. Returns a function that removes the hook.
+ */
+export function onFatalSignal(hook) {
+  reaper.hooks.add(hook);
+  return () => reaper.hooks.delete(hook);
+}
+
+/** Block this thread for `ms` (signal handlers here must finish their work
+ *  before returning; see onFatalSignal). */
+export function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/** After SIGKILLing agents: how long to let the kernel finish with them
+ *  before the hooks read what they left on disk. */
+const KILL_SETTLE_MS = 150;
+
+/** How long the process is given to shut down by itself after a fatal signal
+ *  before the reaper ends it. */
+export const REAP_GRACE_MS = 2000;
+
+/**
+ * What a fatal signal does: kill every live agent now, then make sure the
+ * process ends — but not by calling process.exit() on the spot. Vite has its
+ * own SIGTERM handler that closes the server cleanly and exits; exiting here
+ * first would cut that short. So the exit is a fallback on an unref'd timer:
+ * if something else ends the process in time it never fires, and it does not
+ * itself keep the process alive.
+ */
+export function reapOnSignal(code, { exit = (c) => process.exit(c), graceMs = REAP_GRACE_MS, kills = liveKills, hooks = reaper.hooks } = {}) {
+  const had = kills.size > 0;
+  for (const kill of kills) {
+    try { kill(); } catch { /* group already gone */ }
+  }
+  if (hooks.size) {
+    // SIGKILL cannot be caught, so the agents stop at once; give the kernel a
+    // moment to finish tearing them down, then let the server clean up after
+    // them — synchronously, before this handler returns and anything else
+    // gets to end the process.
+    if (had) sleepSync(KILL_SETTLE_MS);
+    for (const hook of hooks) {
+      try { hook(); } catch (e) { console.error(`[fret-not] shutdown hook failed: ${String(e?.message || e)}`); }
+    }
+  }
+  const timer = setTimeout(() => exit(code), graceMs);
+  timer.unref?.();
+  return timer;
+}
+
 function armReaper() {
-  if (reaperArmed) return;
-  reaperArmed = true;
+  if (reaper.armed) return;
+  reaper.armed = true;
   for (const [sig, code] of [["SIGTERM", 143], ["SIGINT", 130], ["SIGHUP", 129]]) {
-    process.on(sig, () => {
-      for (const kill of liveKills) {
-        try { kill(); } catch { /* group already gone */ }
-      }
-      process.exit(code);
-    });
+    process.on(sig, () => { reapOnSignal(code); });
   }
 }
 
+/** The prefix of the per-run temp directory (the empty MCP config and the
+ *  prompt file). */
+const RUN_DIR_PREFIX = "fret-not-mcp-";
+
 /**
- * Start a headless agent run. Returns { result, kill } — `result` resolves to
- *   { text, costUsd, numTurns, durationMs, usage, permissionDenials, raw }
- * where `text` is the agent's final reply (unwrapped from the --output-format
- * json envelope), and `kill()` SIGKILLs the process group. `signal` (an
- * AbortSignal) does the same when it fires — wire it to request-close.
+ * Delete per-run temp directories a killed server left behind: directories
+ * in the system temp folder with this app's prefix, not touched for
+ * `maxAgeMs` (longer than any run; a run that outlives it has long since
+ * opened what it needs from there). They hold the chat transcript. Never
+ * throws; returns how many were removed.
  */
-export function startClaude({ prompt, systemPrompt, model, cwd = REPO_ROOT, signal, maxTurns = 25, timeoutSec = 600, tools = "content", contentDir, repoRoot }) {
+export function sweepPromptDirs({ maxAgeMs = 45 * 60_000, now = Date.now(), tmp = os.tmpdir() } = {}) {
+  let removed = 0;
+  try {
+    for (const name of fs.readdirSync(tmp)) {
+      if (!name.startsWith(RUN_DIR_PREFIX)) continue;
+      const dir = path.join(tmp, name);
+      try {
+        const st = fs.lstatSync(dir);
+        if (!st.isDirectory() || now - st.mtimeMs < maxAgeMs) continue;
+        fs.rmSync(dir, { recursive: true, force: true });
+        removed++;
+      } catch { /* gone already, or not ours to read */ }
+    }
+  } catch { /* no temp folder to read */ }
+  return removed;
+}
+
+/**
+ * Start a headless agent run. Returns { result, kill, pid } — `result`
+ * resolves to
+ *   { text, costUsd, numTurns, durationMs, usage, permissionDenials, writes, raw }
+ * where `text` is the agent's final reply (from the stream's result line),
+ * `writes` the absolute paths its Write/Edit calls named, and `kill()`
+ * SIGKILLs the process group. `signal` (an AbortSignal) does the same when it
+ * fires — wire it to request-close.
+ *
+ * `onWrite(absPath)` is called as each Write/Edit call appears in the stream
+ * — while the run is still going, so the caller knows what the agent touched
+ * even if the run is then killed and `result` rejects.
+ */
+export function startClaude({ prompt, systemPrompt, model, cwd = REPO_ROOT, signal, maxTurns = 25, timeoutSec = 600, tools = "content", contentDir, repoRoot, onWrite }) {
   const chosen = model ?? DEFAULT_MODEL;
   // Say which model actually went out: a setting that silently failed to
   // apply is otherwise invisible until the bill.
-  console.log(`[fret-not] claude: spawning ${chosen} (${tools === "none" ? "no tools" : "content tools"}, max ${maxTurns} turns, ${timeoutSec}s timeout)`);
+  console.log(`[fret-not] claude: spawning ${chosen} (${tools === "none" ? "no tools" : tools === "read" ? "read-only tools" : "content tools"}, max ${maxTurns} turns, ${timeoutSec}s timeout)`);
 
   // An EMPTY MCP config under --strict-mcp-config: see buildArgs.
-  let mcpDir = fs.mkdtempSync(path.join(os.tmpdir(), "fret-not-mcp-"));
+  let mcpDir = fs.mkdtempSync(path.join(os.tmpdir(), RUN_DIR_PREFIX));
   const mcpConfigPath = path.join(mcpDir, "mcp.json");
   fs.writeFileSync(mcpConfigPath, JSON.stringify({ mcpServers: {} }), { mode: 0o600 });
   const cleanupMcp = () => {
@@ -249,35 +425,76 @@ export function startClaude({ prompt, systemPrompt, model, cwd = REPO_ROOT, sign
     try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* tmp, it can wait for the OS */ }
   };
 
-  const args = buildArgs({ prompt, systemPrompt, model: chosen, maxTurns, mcpConfigPath, tools, contentDir, repoRoot });
-  const proc = spawn("claude", args, {
-    cwd,
-    env: childEnv(),
-    stdio: ["ignore", "pipe", "pipe"],
-    detached: true,
-  });
+  // Anything that throws before the child exists (a bad model, a content
+  // directory outside the repo, spawn itself failing synchronously) must not
+  // leave the temp directory behind: no 'close' or 'error' event will come.
+  let proc;
+  let promptFd = null;
+  try {
+    const args = buildArgs({ systemPrompt, model: chosen, maxTurns, mcpConfigPath, tools, contentDir, repoRoot });
+    const promptPath = path.join(mcpDir, "prompt.txt");
+    fs.writeFileSync(promptPath, String(prompt ?? ""), { mode: 0o600 });
+    promptFd = fs.openSync(promptPath, "r");
+    proc = spawn("claude", args, {
+      cwd,
+      env: childEnv(),
+      stdio: [promptFd, "pipe", "pipe"],
+      detached: true,
+    });
+  } catch (e) {
+    cleanupMcp();
+    throw e;
+  } finally {
+    // The child has its own copy of the descriptor by now.
+    if (promptFd !== null) { try { fs.closeSync(promptFd); } catch { /* already closed */ } }
+  }
 
   let killed = false;
-  const kill = () => { killed = true; try { process.kill(-proc.pid, "SIGKILL"); } catch { /* already gone */ } };
+  let timedOut = false;
+  const kill = () => {
+    killed = true;
+    // No pid means the spawn failed (ENOENT): there is nothing to kill, and
+    // process.kill(-undefined) must not be attempted.
+    if (!proc.pid) return;
+    try { process.kill(-proc.pid, "SIGKILL"); } catch { /* already gone */ }
+  };
   armReaper();
   liveKills.add(kill);
   proc.on("close", () => { liveKills.delete(kill); cleanupMcp(); });
   // A spawn failure (ENOENT) can emit 'error' with no 'close' behind it.
-  proc.on("error", cleanupMcp);
+  proc.on("error", () => { liveKills.delete(kill); cleanupMcp(); });
   if (signal) {
     if (signal.aborted) kill();
     else signal.addEventListener("abort", kill, { once: true });
   }
 
   const result = new Promise((resolve, reject) => {
-    let stdout = "", stderr = "";
-    proc.stdout.on("data", (d) => { stdout += d; });
+    let stdout = "", stderr = "", pending = "";
+    const writes = new Set();
+    const scan = (line) => {
+      for (const p of toolWrites(line)) {
+        const abs = path.resolve(cwd, p);
+        if (writes.has(abs)) continue;
+        writes.add(abs);
+        try { onWrite?.(abs); } catch (e) { console.error(`[fret-not] claude: onWrite failed: ${String(e?.message || e)}`); }
+      }
+    };
+    proc.stdout.setEncoding("utf8");
+    proc.stdout.on("data", (d) => {
+      stdout += d;
+      pending += d;
+      let nl;
+      while ((nl = pending.indexOf("\n")) >= 0) {
+        scan(pending.slice(0, nl));
+        pending = pending.slice(nl + 1);
+      }
+    });
     proc.stderr.on("data", (d) => { stderr += d; });
 
-    const timer = setTimeout(() => {
-      kill();
-      reject(new Error(`claude timed out after ${timeoutSec}s`));
-    }, timeoutSec * 1000);
+    // The timeout only kills; the rejection waits for 'close', like a
+    // cancel does. The caller deletes the run's worktree when this rejects,
+    // and must not start while the process group could still be writing.
+    const timer = setTimeout(() => { timedOut = true; kill(); }, timeoutSec * 1000);
 
     proc.on("error", (err) => {
       clearTimeout(timer);
@@ -290,7 +507,9 @@ export function startClaude({ prompt, systemPrompt, model, cwd = REPO_ROOT, sign
     proc.on("close", (code) => {
       clearTimeout(timer);
       signal?.removeEventListener("abort", kill);
+      if (pending) scan(pending);
       // our own kill (client disconnect) — not an auth/limit mystery
+      if (timedOut) return reject(new Error(`claude timed out after ${timeoutSec}s`));
       if (killed) return reject(new Error("cancelled"));
       const verdict = classifyExit({ code, stdout, stderr });
       if (!verdict.ok) return reject(new Error(verdict.message));
@@ -302,10 +521,11 @@ export function startClaude({ prompt, systemPrompt, model, cwd = REPO_ROOT, sign
         durationMs: typeof raw.duration_ms === "number" ? raw.duration_ms : null,
         usage: raw.usage ?? null,
         permissionDenials: Array.isArray(raw.permission_denials) ? raw.permission_denials : [],
+        writes: [...writes],
         raw,
       });
     });
   });
 
-  return { result, kill };
+  return { result, kill, pid: proc.pid ?? null };
 }

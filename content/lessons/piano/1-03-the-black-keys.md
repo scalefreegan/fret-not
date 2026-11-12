@@ -86,7 +86,7 @@ The three black keys sit among F, G, A and B:
 
 It is tempting to think "sharp means black key". Usually it does, but the real meaning is "a half step up". A half step above E is the white key F, and a half step below C is the white key B. That is why E♯ and C♭ exist as names, even though they are rare.
 
-Click a few black keys below and watch where each falls on the guitar, where there is nothing black or white about it.
+Press a few black keys below and watch where each falls on the guitar, where there is nothing black or white about it.
 
 ```widget
 type: linked

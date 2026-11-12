@@ -8,6 +8,14 @@ export interface ProgressReply {
   /** The stored file was unreadable; it was moved aside and progress starts
    *  empty. Worth telling the learner once. */
   recovered?: boolean;
+  /** Where the unreadable file was moved to, when the server says. */
+  recoveredTo?: string;
+  /** POST /answers only: how many answers were not recorded because their
+   *  concept is not in the curriculum on disk. */
+  dropped?: number;
+  /** POST /answers only: the answers were kept but the lesson could not be
+   *  marked done (its id is not in the curriculum on disk). */
+  lessonDropped?: boolean;
 }
 
 async function call(path: string, body?: unknown): Promise<ProgressReply> {

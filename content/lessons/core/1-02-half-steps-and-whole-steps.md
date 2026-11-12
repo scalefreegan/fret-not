@@ -9,18 +9,21 @@ summary: The half step is the smallest distance between two notes, and two of th
 exercises:
   - kind: name-interval
     concept: half-whole-steps
+    vocab: letters
     count: 6
     view: keyboard
     intervals: [m2, M2]
     labels: steps
   - kind: ear-interval
     concept: half-whole-steps
+    vocab: letters
     count: 6
     intervals: [m2, M2]
     mode: melodic
     labels: steps
   - kind: build-interval
     concept: half-whole-steps
+    vocab: letters
     count: 5
     intervals: [m2, M2]
     direction: up
@@ -79,7 +82,7 @@ The white keys look evenly spaced, but they are not evenly spaced in sound. Most
 
 ## Hear the difference
 
-Below, the upper note starts a half step above the lower one. Play them one after the other. Then click the key one further to the right to make it a whole step, and compare.
+Below, the upper note starts a half step above the lower one. Play them one after the other. Then press the key one further to the right to make it a whole step, and compare.
 
 ```widget
 type: interval
@@ -87,6 +90,7 @@ from: E4
 to: F4
 interactive: true
 views: [keyboard]
+labels: steps
 ```
 
 A half step is tight and close, the clashing sound from the end of Level 0 when the two notes are played together. A whole step is still close but more relaxed. You may hear other names for these: a half step is also called a *semitone* and a whole step a *tone*.

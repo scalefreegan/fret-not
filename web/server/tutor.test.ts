@@ -2,16 +2,15 @@
 // problem diff, the history store and the auto-commit. Nothing here spawns
 // `claude`; the store and the commits run against temp directories.
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { after, before, test } from "node:test";
 import type { Content } from "../shared/content.ts";
 import { startersFor } from "../src/tutor/starters.ts";
-import { contextNote, fixPrompt, historyPrompt, newProblems, remainingNote, sanitizeContext, systemPrompt } from "./chat.ts";
-import { commitContent, commitSubject, contentDirty } from "./commit.ts";
+import { contextNote, fixPrompt, historyPrompt, historyWindow, interruptedNote, lostIds, newProblems, readOnlyBrief, remainingNote, sanitizeContext, systemPrompt, turnProblems } from "./chat.ts";
 import { REPO_ROOT } from "./loader.ts";
+import { commitSubject, heldNote, isContentFile, readOnlyNote, strayWrites, unsafePaths } from "./turn.ts";
 import { appendHistory, clearHistory, dataDir, getModel, readHistory, setModel } from "./store.ts";
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "fret-not-tutor-"));
@@ -51,6 +50,7 @@ test("system prompt: the two jobs, the sandbox rules, and the curriculum as it i
   assert.match(p, /content\/curriculum\.yaml FIRST/);
   assert.match(p, /no shell/);
   assert.match(p, /Do not run git/);
+  assert.match(p, /private copy of the repository \(\/repo\)/);
   assert.match(p, /Changed:/);
   assert.match(p, /never tell the learner whether an answer/); // it does not grade
   assert.match(p, /core-0-octave \[core\] "The octave" — content\/lessons\/core\/0-07-octave\.md/);
@@ -84,6 +84,15 @@ test("context is rebuilt field by field, never trusted", () => {
     assert.equal(sanitizeContext({ page: "lesson", lesson: { id: "a", title: "t", file } }).lesson?.file, "", file);
   }
   assert.equal(sanitizeContext({ page: "lesson", lesson: { id: "Bad Id", title: "t", file: "lessons/x.md" } }).lesson, undefined);
+  // The page sends the path relative to the repo (web/src/App.tsx:
+  // `content/${lesson.file}`); the loader's own shape is relative to content/.
+  // Both are the same file and both are kept, in the loader's spelling.
+  const fromPage = sanitizeContext({ page: "lesson", lesson: { id: "core-0-octave", title: "The octave", file: "content/lessons/core/0-07-octave.md", concepts: ["octave"] } });
+  assert.equal(fromPage.lesson?.file, "lessons/core/0-07-octave.md");
+  assert.match(contextNote(fromPage), /— file content\/lessons\/core\/0-07-octave\.md —/);
+  for (const file of ["content/../lessons/x.md", "content/content/lessons/x.md", "content/web/x.md", "content/lessons/../../x.md"]) {
+    assert.equal(sanitizeContext({ page: "lesson", lesson: { id: "a", title: "t", file } }).lesson?.file, "", file);
+  }
   assert.equal(sanitizeContext({ page: "lab", lab: "x".repeat(500) }).lab?.length, 60);
 });
 
@@ -132,7 +141,112 @@ test("problem diff: only what the turn introduced", () => {
   const rem = remainingNote([b, a2]);
   assert.match(rem, /2 files/);
   assert.match(rem, /content\/lessons\/b\.md: bad widget/);
+  assert.match(rem, /thrown away/);
+  assert.match(rem, /your curriculum was never touched and nothing was committed/);
   assert.match(remainingNote([a, a2]), /one file/);
+  assert.equal(interruptedNote("cancelled", false), "The tutor's turn did not finish (cancelled). Your curriculum was not touched and nothing was committed.");
+  assert.equal(interruptedNote("timed out", true), "The tutor's turn did not finish (timed out). Whatever it had written so far was in a separate copy and has been thrown away; your curriculum was not touched and nothing was committed.");
+});
+
+test("ids that were live before the turn and are gone after it are problems", () => {
+  const withIds = (lessons: [string, string][], concepts: string[], problems: Content["problems"] = []): Content => ({
+    ...content,
+    lessons: lessons.map(([id, file]) => ({ ...content.lessons[0], id, file })),
+    concepts: concepts.map((id) => ({ ...content.concepts[0], id })),
+    problems,
+  });
+  const before = withIds([["l-a", "lessons/a.md"], ["l-b", "lessons/b.md"]], ["x", "y", "z"]);
+  assert.deepEqual(lostIds(before, before), []);
+  assert.deepEqual(lostIds(before, withIds([["l-a", "lessons/a.md"], ["l-b", "lessons/b.md"], ["l-c", "lessons/c.md"]], ["x", "y", "z", "w"])), [], "adding is fine");
+  // Renamed in place, and one concept dropped.
+  const renamed = lostIds(before, withIds([["l-a2", "lessons/a.md"], ["l-b", "lessons/b.md"]], ["x", "z"]));
+  assert.equal(renamed.length, 2);
+  assert.deepEqual(renamed[0].file, "lessons/a.md");
+  assert.match(renamed[0].message, /lesson id "l-a" no longer exists/);
+  assert.deepEqual(renamed[1].file, "curriculum.yaml");
+  assert.match(renamed[1].message, /concept id removed or renamed: y\./);
+  assert.match(lostIds(before, withIds([["l-a", "lessons/a.md"], ["l-b", "lessons/b.md"]], []))[0].message, /concept ids removed or renamed: x, y, z\./);
+  // The file kept its id but moved: the id still exists, nothing lost.
+  assert.deepEqual(lostIds(before, withIds([["l-a", "lessons/moved.md"], ["l-b", "lessons/b.md"]], ["x", "y", "z"])), []);
+  // A lesson the loader now refuses is reported once, by the loader's problem.
+  const refused = withIds([["l-b", "lessons/b.md"]], ["x", "y", "z"], [{ file: "lessons/a.md", message: "bad widget" }]);
+  assert.deepEqual(lostIds(before, refused), []);
+  assert.deepEqual(turnProblems(before, refused), [{ file: "lessons/a.md", message: "bad widget" }]);
+  // A deleted lesson file has no loader problem: the id check is what catches it.
+  assert.equal(turnProblems(before, withIds([["l-b", "lessons/b.md"]], ["x", "y", "z"])).length, 1);
+  // A file that still LOADS under another id is a rename even when the loader
+  // also has a lesser complaint about that file (it did not refuse it).
+  const renamedWithWarning = withIds([["l-a-renamed", "lessons/a.md"], ["l-b", "lessons/b.md"]], ["x", "y", "z"], [{ file: "lessons/a.md", message: 'mirrors "nope" is not a lesson id' }]);
+  assert.match(lostIds(before, renamedWithWarning)[0].message, /lesson id "l-a" no longer exists/);
+  // curriculum.yaml unreadable afterwards: nothing to compare concepts with;
+  // the loader's own problem with the file is what the turn answers for.
+  assert.deepEqual(lostIds(before, withIds([["l-a", "lessons/a.md"], ["l-b", "lessons/b.md"]], [], [{ file: "curriculum.yaml", message: "bad yaml" }])), []);
+});
+
+test("which changed paths are curriculum files, and which are strays", () => {
+  for (const ok of ["curriculum.yaml", "instruments/guitar.yaml", "lessons/core/0-01-a.md", "lessons/deep/er/x.md"]) assert.ok(isContentFile(ok), ok);
+  for (const no of ["README.md", "notes.txt", "instruments/guitar.yml", "instruments/sub/x.yaml", "lessons/core/a.txt", "lessons/core/image.png", "curriculum.yaml.bak", "lessons.md"]) assert.ok(!isContentFile(no), no);
+
+  const dir = path.join(tmp, "stray", "content");
+  fs.mkdirSync(path.join(dir, "lessons", "core", "folder.md"), { recursive: true });
+  fs.writeFileSync(path.join(dir, "lessons", "core", "a.md"), "x\n");
+  const bad = strayWrites({ content: dir }, [
+    ...["lessons/core/a.md", "lessons/core/gone.md", ".git/config", "lessons/.gitignore", "lessons/.hidden/x.md", "notes.txt", "lessons/core/pic.png", "lessons/core/folder.md"].map((p) => ({ path: p, ignored: false })),
+    { path: "lessons/core/ignored.md", ignored: true },
+  ]);
+  assert.deepEqual(bad.map((p) => p.file), [".git/config", "lessons/.gitignore", "lessons/.hidden/x.md", "notes.txt", "lessons/core/pic.png", "lessons/core/folder.md", "lessons/core/ignored.md"]);
+  assert.match(bad[6].message, /ignore/);
+  assert.match(bad[0].message, /starts with a dot/);
+  assert.match(bad[3].message, /not a curriculum file/);
+  assert.match(bad[5].message, /regular file/);
+
+  // Links and nested repositories in content/ are found wherever they are.
+  fs.symlinkSync(path.join(tmp, "outside-target"), path.join(dir, "lessons", "link"));
+  fs.mkdirSync(path.join(dir, "lessons", "core", ".git"));
+  assert.deepEqual(unsafePaths(dir).sort(), ["lessons/core/.git", "lessons/link"]);
+});
+
+test("what the learner is told about a read-only turn and a commit that was kept", () => {
+  const why = { ok: false as const, reason: "content/ has changes that are not committed (content/lessons/core/x.md)", fix: "Commit them, then ask again." };
+  assert.equal(readOnlyNote(why), "The tutor can answer questions right now but cannot write lessons, because content/ has changes that are not committed (content/lessons/core/x.md). Commit them, then ask again.");
+  assert.match(readOnlyBrief(why), /READ-ONLY[\s\S]*no Write or Edit tool[\s\S]*not committed[\s\S]*Commit them, then ask again\./);
+  const held = heldNote({ branch: "refs/heads/main", spec: "content" }, "0123456789abcdef0123", "added lesson x", { ref: "refs/tutor/17-ab", reason: "main gained or lost commits while the tutor was working" });
+  assert.match(held, /NOT put into your files, because main gained or lost commits/);
+  assert.match(held, /Nothing in your working tree was touched/);
+  assert.match(held, /commit 0123456789 under the name refs\/tutor\/17-ab/);
+  assert.match(held, /`git merge --ff-only refs\/tutor\/17-ab`/);
+  assert.match(held, /`git cherry-pick refs\/tutor\/17-ab`/);
+  assert.match(held, /`git update-ref -d refs\/tutor\/17-ab`/);
+
+  // Files already written and the undo failed: no "nothing was touched", and a way back out.
+  const staged = heldNote({ branch: "refs/heads/main", spec: "content" }, "0123456789abcdef0123", "added lesson x", { ref: "refs/tutor/17-ab", reason: "main moved at the last moment", state: "staged" });
+  assert.doesNotMatch(staged, /Nothing in your working tree was touched/);
+  assert.match(staged, /NOT committed to your branch/);
+  assert.match(staged, /written into content\/ and staged/);
+  assert.match(staged, /`git restore --staged --worktree content`/);
+  assert.match(staged, /`git update-ref -d refs\/tutor\/17-ab`/);
+
+  // No name could be given: the full hash, honestly unnamed, and how to keep it.
+  const unnamed = heldNote({ branch: "refs/heads/main", spec: "content" }, "0123456789abcdef0123", "added lesson x", { ref: "0123456789abcdef0123", reason: "git could not record the commit (disk full)", state: "unnamed" });
+  assert.match(unnamed, /unnamed commit 0123456789abcdef0123/);
+  assert.match(unnamed, /`git update-ref refs\/tutor\/kept-0123456789 0123456789abcdef0123`/);
+  assert.doesNotMatch(unnamed, /under the name|update-ref -d/);
+});
+
+test("the replayed history is bounded by count and by bytes", () => {
+  const m = (text: string): { role: "user"; text: string; ts: string } => ({ role: "user", text, ts: "" });
+  const many = Array.from({ length: 100 }, (_, i) => m(`m${i}`));
+  assert.deepEqual(historyWindow(many).map((x) => x.text), many.slice(-40).map((x) => x.text));
+  assert.deepEqual(historyWindow(many, 3).map((x) => x.text), ["m97", "m98", "m99"]);
+  // Bytes, not characters: twenty 20,000-character messages of a three-byte
+  // character are 1.2 MB, and only what fits in the budget is replayed.
+  const big = Array.from({ length: 20 }, () => m("♯".repeat(20_000)));
+  const kept = historyWindow(big);
+  assert.equal(kept.length, 2);
+  assert.ok(kept.reduce((n, x) => n + Buffer.byteLength(x.text), 0) <= 150_000);
+  // One oversized message ends the walk: the tail stays contiguous.
+  assert.deepEqual(historyWindow([m("old"), m("x".repeat(200_000)), m("new")]).map((x) => x.text), ["new"]);
+  assert.deepEqual(historyWindow([]), []);
 });
 
 test("commit subject comes from the Changed: line", () => {
@@ -159,45 +273,21 @@ test("history store: append, read, torn lines, clear, model setting", () => {
   assert.equal(setModel("claude-opus-5-5"), "claude-opus-5-5");
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dataDir(), "settings.json"), "utf8")), { model: "claude-opus-5-5", other: 1 });
   assert.throws(() => setModel("nope"), /unknown model/);
+  assert.deepEqual(fs.readdirSync(dataDir()).filter((f) => f.endsWith(".tmp")), [], "settings are written by rename, with no temp file left");
+
+  // The transcript is trimmed to its newest messages once it grows large.
+  clearHistory();
+  for (let i = 0; i < 30; i++) appendHistory({ role: "user", text: `${i}:${"x".repeat(100)}`, ts: "" }, { maxBytes: 2000, keepBytes: 1000 });
+  const kept = readHistory();
+  assert.ok(fs.statSync(path.join(dataDir(), "chat.jsonl")).size <= 2000);
+  assert.ok(kept.length >= 5 && kept.length < 30, String(kept.length));
+  assert.match(kept.at(-1)!.text, /^29:/);
+  assert.deepEqual(kept.map((m) => Number(m.text.split(":")[0])), Array.from({ length: kept.length }, (_, i) => 30 - kept.length + i), "a contiguous tail, oldest first");
+  // One message bigger than the whole budget is still kept (never an empty file).
+  appendHistory({ role: "assistant", text: "y".repeat(5000), ts: "" }, { maxBytes: 2000, keepBytes: 1000 });
+  assert.deepEqual(readHistory().map((m) => m.text.length), [5000]);
+  clearHistory();
   assert.ok(!fs.existsSync(path.join(realData, "chat.jsonl")) || fs.statSync(path.join(realData, "chat.jsonl")).mtimeMs < Date.now() - 1000, "the real data/ was not written");
-});
-
-test("auto-commit stages content/ only, in a throwaway repo", async () => {
-  const repo = path.join(tmp, "repo");
-  const dir = path.join(repo, "content");
-  fs.mkdirSync(path.join(dir, "lessons"), { recursive: true });
-  const git = (...args: string[]) => execFileSync("git", args, { cwd: repo, encoding: "utf8" });
-  git("init", "-q", "-b", "main");
-  git("config", "user.email", "test@example.invalid");
-  git("config", "user.name", "Test");
-  git("config", "commit.gpgsign", "false");
-  fs.writeFileSync(path.join(repo, "app.txt"), "one\n");
-  fs.writeFileSync(path.join(dir, "curriculum.yaml"), "tracks: []\n");
-  git("add", "-A");
-  git("commit", "-q", "-m", "init");
-
-  assert.equal(await contentDirty({ repoRoot: repo, dir }), false);
-  assert.deepEqual(await commitContent("nothing", { repoRoot: repo, dir }), { skipped: true });
-
-  // The tutor edits content/; the user has unrelated work, staged and unstaged.
-  fs.writeFileSync(path.join(dir, "lessons", "new.md"), "---\nid: x\n---\nbody\n");
-  fs.rmSync(path.join(dir, "curriculum.yaml"));
-  fs.writeFileSync(path.join(repo, "app.txt"), "two\n");
-  fs.writeFileSync(path.join(repo, "staged.txt"), "mine\n");
-  git("add", "staged.txt");
-  assert.equal(await contentDirty({ repoRoot: repo, dir }), true);
-
-  const c = await commitContent("Wrote it.\nChanged: added lesson x; `quotes\" $(and) shell; chars`", { repoRoot: repo, dir });
-  assert.ok("hash" in c, JSON.stringify(c));
-  assert.equal(git("log", "-1", "--format=%s").trim(), "agent: added lesson x; `quotes\" $(and) shell; chars`");
-  assert.deepEqual(git("show", "--name-status", "--format=", "HEAD").trim().split("\n").sort(), ["A\tcontent/lessons/new.md", "D\tcontent/curriculum.yaml"]);
-  // The user's own work is exactly as it was: still staged, still modified.
-  assert.deepEqual(git("status", "--porcelain").trimEnd().split("\n").sort(), [" M app.txt", "A  staged.txt"]);
-  assert.equal(await contentDirty({ repoRoot: repo, dir }), false);
-
-  // A content dir outside the repository is refused, not committed around.
-  const outside = await commitContent("x", { repoRoot: repo, dir: path.join(tmp, "elsewhere") });
-  assert.ok("error" in outside && /outside the repository/.test(outside.error));
 });
 
 test("starter prompts fit the page", () => {

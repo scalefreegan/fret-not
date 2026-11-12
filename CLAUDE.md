@@ -45,10 +45,34 @@ macos/                   Dock app (Fret Not.app)
 - Files under `web/shared/` are run directly by Node (type stripping): explicit
   `.ts` import extensions, erasable syntax only.
 - The tutor spawns headless `claude -p` on the Claude Code login (no API key).
-  It may Read the repo and Write/Edit **only under `content/`**. After each
-  turn the server re-validates content, gives the agent one repair turn if it
-  introduced problems, and commits `content/` as `agent: <summary>`.
-- Never change a lesson `id` or a concept `id` once live: progress is keyed on them.
+  The conversation goes in on stdin; the system prompt (the curriculum
+  outline and any loader problems) goes on the command line. **It never
+  writes into the working tree.** When `content/` is exactly the last commit
+  (and `HEAD` is on a branch, nothing like a rebase is in progress,
+  `content/` is a real folder, not reached through a symlink, and holds no
+  symlink or `.git`), the turn runs in a git worktree in the temp directory
+  and may Write/Edit only under that worktree's `content/`. The server
+  validates the result there (loader problems, a lesson or concept id that
+  disappeared, a file that is not a curriculum file, a dot-file), gives the
+  agent one repair turn, commits it in the worktree as `agent: <summary>`
+  and fast-forwards the branch with plumbing (`git read-tree -m -u`, then a
+  compare-and-swap `git update-ref`), never `git merge`, so the owner's git
+  settings (`merge.autoStash` and the like) have no say. If the
+  fast-forward is no longer possible the commit is kept under
+  `refs/tutor/<id>` and the chat says how to take it. A turn that is invalid,
+  cancelled (Stop at any point before the files are written), timed out or
+  dead just has its worktree deleted. In any other repository state the turn
+  is read-only (Read/Glob/Grep) and the chat says to commit or stash
+  `content/` first. The tutor's git calls run no hooks and do not sign, and
+  never run `git worktree prune`. `web/server/turn.ts` explains the rules
+  and lists the few-millisecond windows that are not closed.
+- So: **commit or stash your own edits in `content/` before asking the tutor
+  to write.** The tutor sees the repository as of the last commit, plus the
+  live `docs/CONTENT.md` and `docs/CONTENT-REFERENCE.md`.
+- Never change a lesson `id` or a concept `id` once live: progress is keyed on
+  them. A tutor turn that does is thrown away; a hand edit is not checked.
+- Reviews fall due by local calendar day (`dueAt` is the start of that day),
+  not 24 hours after the last answer.
 - Tests never touch the real `content/` or `data/`: point `FRET_CONTENT_DIR`
   and `FRET_DATA_DIR` at temp dirs.
 - Colours come from the tokens in `web/src/index.css`; components never write

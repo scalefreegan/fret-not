@@ -31,7 +31,7 @@ export interface Instrument {
   id: string;
   title: string;
   layout: "keyboard" | "fretboard";
-  /** Lowest and highest sounding pitch, e.g. ["E2", "E6"]. */
+  /** Lowest and highest sounding pitch, e.g. ["E2", "C6"] for a 20-fret guitar. */
   range: [string, string];
   /** Open strings from the lowest, for fretted instruments. */
   tuning?: string[];

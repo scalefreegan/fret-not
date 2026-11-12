@@ -36,6 +36,20 @@ test("intervals: size, spelling, naming", () => {
   assert.throws(() => M.parseInterval("M5"));
   assert.throws(() => M.parseInterval("P3"));
   for (const iv of M.SIMPLE_INTERVALS) assert.equal(M.intervalOfSemitones(M.semitones(iv)), iv);
+  // A unison cannot be diminished.
+  assert.throws(() => M.parseInterval("d1"));
+  assert.equal(M.isInterval("d1"), false);
+  assert.equal(M.semitones("A1"), 1);
+  // Pairs no single quality can name fall back to the everyday interval of that size; nothing throws.
+  assert.equal(M.intervalText(M.intervalBetween(M.parsePitch("B#3"), M.parsePitch("Cb4"))), "m2");
+  assert.equal(M.intervalText(M.intervalBetween(M.parsePitch("C4"), M.parsePitch("F##4"))), "P5");
+  for (const a of ["Cb4", "C4", "C#4", "E#4", "Fb4", "B#3", "Bbb4", "F##4"]) for (const b of ["Cb4", "C4", "B#3", "Fb5", "E##4", "Abb3"]) M.intervalName(M.intervalBetween(M.parsePitch(a), M.parsePitch(b)));
+  // A4 and d5 share the nickname "tritone" but not their formal names.
+  assert.equal(M.intervalName("A4"), "tritone");
+  assert.equal(M.intervalFormalName("A4"), "augmented fourth");
+  assert.equal(M.intervalFormalName("d5"), "diminished fifth");
+  assert.equal(M.intervalFormalName("P8"), "octave");
+  assert.equal(M.intervalNumberName(3), "third");
 });
 
 test("scales are spelled with one of each letter", () => {
@@ -87,6 +101,22 @@ test("chords: symbols, notes, identification, in a key", () => {
   assert.equal(M.chordSymbol(M.romanToChord("C", "vi")), "Am");
   assert.equal(M.chordSymbol(M.romanToChord("G", "V7")), "D7");
   assert.equal(M.chordSymbol(M.romanToChord("C", "bVII")), "Bb");
+  // Minor keys: plain numerals stand on natural minor; the flat spellings of song charts mean the same chords.
+  const am = (r: string) => M.chordSymbol(M.romanToChord("Am", r));
+  assert.deepEqual(["i", "III", "iv", "v", "V", "VI", "VII"].map(am), ["Am", "C", "Dm", "Em", "E", "F", "G"]);
+  assert.deepEqual(["bIII", "bVI", "bVII", "bII", "vii°", "ii°", "V7"].map(am), ["C", "F", "G", "Bb", "G#dim", "Bdim", "E7"]);
+  assert.equal(M.chordSymbol(M.romanToChord("Em", "bVII")), "D");
+  assert.equal(M.chordSymbol(M.romanToChord("Em", "vii°")), "D#dim");
+  for (const d of M.diatonicTriads("Am")) if (d.roman !== "vii°") assert.equal(M.chordSymbol(M.romanToChord("Am", d.roman)), M.chordSymbol(d.chord), d.roman);
+  // Black-key roots take their usual spelling for the chord's quality.
+  assert.equal(M.chordSymbol(M.identifyChord([61, 64, 68])[0]), "C#m");
+  assert.equal(M.chordSymbol(M.identifyChord([56, 59, 63])[0]), "G#m");
+  assert.equal(M.chordSymbol(M.identifyChord([61, 65, 68])[0]), "Db");
+  assert.equal(M.chordSymbol(M.identifyChord([63, 66, 70])[0]), "Ebm");
+  // Common types first: the keys of C6 are also Am7, and the triad-like reading leads.
+  assert.deepEqual(M.CHORD_ORDER.slice(0, 5), ["maj", "min", "7", "maj7", "m7"]);
+  assert.deepEqual([...M.CHORD_ORDER].sort(), Object.keys(M.CHORDS).sort());
+  assert.deepEqual(M.identifyChord([60, 64, 67, 69]).map(M.chordSymbol), ["Am7", "C6"]);
 });
 
 test("staff positions", () => {
@@ -122,6 +152,18 @@ test("fretboard", () => {
     assert.equal(shape.fingers.length, 6, symbol);
     assert.ok(M.positionsSpellChord(M.shapePositions(shape), symbol), `${symbol} shape spells ${M.shapeMidis(shape).map((m) => M.pcNameOf(m))}`);
   }
+  // No shape crosses its fingers: a higher-numbered finger never sits on a lower fret than a lower-numbered one.
+  for (const [symbol, shape] of Object.entries(M.GUITAR_SHAPES)) {
+    const held = shape.frets.map((fret, i) => ({ fret, finger: shape.fingers[i] })).filter((x): x is { fret: number; finger: number } => x.fret !== null && x.fret > 0);
+    for (const x of held) assert.ok(x.finger >= 1 && x.finger <= 4, `${symbol}: every fretted string names a finger`);
+    shape.frets.forEach((fret, i) => {
+      if (fret === null || fret === 0) assert.equal(shape.fingers[i], 0, `${symbol}: open and unplayed strings take no finger`);
+    });
+    for (const a of held) for (const b of held) assert.ok(!(a.finger > b.finger && a.fret < b.fret), `${symbol}: finger ${a.finger} on fret ${a.fret} crosses finger ${b.finger} on fret ${b.fret}`);
+    // One finger holds one fret (a barre holds several strings at it).
+    for (const a of held) for (const b of held) if (a.finger === b.finger) assert.equal(a.fret, b.fret, `${symbol}: finger ${a.finger} on two frets`);
+  }
+  assert.deepEqual(M.GUITAR_SHAPES.Gmaj7.fingers, [3, 2, 0, 0, 0, 1]);
   assert.deepEqual(M.pianoVoicing("C"), [60, 64, 67]);
   assert.deepEqual(M.pianoVoicing("G7"), [55, 59, 62, 65]);
 });
@@ -143,6 +185,65 @@ test("rhythm, melody and tab tokens", () => {
   assert.equal(M.parseTime("6/8").barBeats, 3);
   assert.equal(M.countLabel(0.5, "4/4"), "&");
   assert.equal(M.countLabel(2, "4/4"), "3");
+  // The count follows the bottom number: in 2/2 the half note gets the beat.
+  assert.deepEqual([0, 1, 2, 3, 0.5].map((b) => M.countLabel(b, "2/2")), ["1", "&", "2", "&", "e"]);
+  assert.deepEqual([0, 0.5, 1, 2.5].map((b) => M.countLabel(b, "6/8")), ["1", "2", "3", "6"]);
+  assert.equal(M.countUnitBeats("2/2"), 2);
   assert.throws(() => M.parseMelody("C4"));
   assert.throws(() => M.parseMelody("H4:q"));
+});
+
+test("interval numbers between two pitches, and names past a thirteenth", () => {
+  const p = M.parsePitch;
+  assert.equal(M.numberNameBetween(p("C4"), p("E4")), "third");
+  assert.equal(M.numberNameBetween(p("C4"), p("Eb4")), "third");
+  assert.equal(M.numberNameBetween(p("E4"), p("C4")), "third");
+  assert.equal(M.numberNameBetween(p("C4"), p("C5")), "octave");
+  assert.equal(M.numberNameBetween(p("C4"), p("C4")), "unison");
+  assert.equal(M.intervalNumberBetween(p("C4"), p("G5")), 12);
+  assert.equal(M.intervalNumberName(14), "fourteenth");
+  assert.equal(M.intervalNumberName(15), "fifteenth");
+  assert.equal(M.intervalNumberName(21), "21st");
+  assert.equal(M.intervalNumberName(22), "22nd");
+  assert.equal(M.intervalFormalName("P15"), "perfect fifteenth");
+  // B♯3 is written below C♭4 and sounds above it: the size is a half step,
+  // and the direction comes from the sound.
+  assert.equal(M.intervalText(M.intervalBetween(p("B#3"), p("Cb4"))), "m2");
+  assert.equal(M.soundsUpward(p("B#3"), p("Cb4")), false);
+  assert.equal(M.soundsUpward(p("Cb4"), p("B#3")), true);
+});
+
+test("romanToChord in a minor key, numeral by numeral", () => {
+  const sym = (key: string, roman: string) => M.chordSymbol(M.romanToChord(key, roman));
+  const table: [string, string, string][] = [
+    ["Am", "i", "Am"], ["Am", "ii°", "Bdim"], ["Am", "III", "C"], ["Am", "iv", "Dm"], ["Am", "v", "Em"], ["Am", "V", "E"], ["Am", "V7", "E7"],
+    ["Am", "VI", "F"], ["Am", "VII", "G"], ["Am", "bIII", "C"], ["Am", "bVI", "F"], ["Am", "bVII", "G"],
+    ["Am", "vii°", "G#dim"], ["Am", "bvii°", "Gdim"], ["Am", "#vi°", "F#dim"], ["Am", "bII", "Bb"],
+    ["Em", "bVII", "D"], ["Em", "vii°", "D#dim"], ["Em", "bvii°", "Ddim"], ["Dm", "bVI", "Bb"], ["Dm", "vii°", "C#dim"], ["Cm", "bIII", "Eb"], ["Cm", "vii°", "Bdim"], ["Cm", "bvii°", "Bbdim"],
+    ["C", "vii°", "Bdim"], ["C", "bVII", "Bb"], ["C", "vi", "Am"], ["G", "V7", "D7"],
+  ];
+  for (const [key, roman, want] of table) assert.equal(sym(key, roman), want, `${roman} in ${key}`);
+});
+
+test("countLabel: every sixteenth in 2/2 has a word, and x/4 is unchanged", () => {
+  const bar22 = Array.from({ length: 16 }, (_, i) => M.countLabel(i * 0.25, "2/2"));
+  assert.deepEqual(bar22, ["1", "&", "e", "&", "&", "&", "a", "&", "2", "&", "e", "&", "&", "&", "a", "&"]);
+  assert.deepEqual([0, 0.25, 0.5, 0.75, 1].map((b) => M.countLabel(b, "4/4")), ["1", "e", "&", "a", "2"]);
+  assert.deepEqual([0, 1, 2, 3].map((b) => M.countLabel(b, "2/2")), ["1", "&", "2", "&"]);
+});
+
+test("round 3: fret positions stay on the neck, and off-grid counts have no word", async () => {
+  const { isFretPos, parseFretPos } = await import("./instruments.ts");
+  const { countLabel, parseTab } = await import("./rhythm.ts");
+  assert.equal(isFretPos("6/3"), true);
+  assert.equal(isFretPos("1/20"), true);
+  assert.equal(isFretPos("7/3"), false);
+  assert.equal(isFretPos("1/21"), false);
+  assert.throws(() => parseFretPos("1/99"));
+  assert.throws(() => parseTab("1/25:q 6/99:q"));
+  // 6/8: eighths are counted, the sixteenth between is "&", a dotted sixteenth has no word.
+  assert.equal(countLabel(0.5, "6/8"), "2");
+  assert.equal(countLabel(0.25, "6/8"), "&");
+  assert.equal(countLabel(1.625, "6/8"), "");
+  assert.equal(countLabel(1.875, "6/8"), "");
 });

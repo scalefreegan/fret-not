@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import type { Sound, Timbre } from "../../../shared/exercise-types.ts";
+import type { Timbre } from "../../../shared/exercise-types.ts";
 import { CHORDS, chordFullName, chordLabel, chordNotes, parseChord } from "../../../shared/music/chords.ts";
-import { GUITAR_SHAPES, pianoVoicing, positionsOf, positionsOfPc, shapeMidis, shapePositions, type FretPos } from "../../../shared/music/instruments.ts";
-import { intervalBetween, intervalName, intervalOfSemitones, intervalText, JUST_RATIOS, semitones, transpose } from "../../../shared/music/intervals.ts";
+import { GUITAR_FRETS, GUITAR_SHAPES, GUITAR_WRITTEN_OFFSET, pianoVoicing, positionsOf, positionsOfPc, shapeMidis, shapePositions, type FretPos } from "../../../shared/music/instruments.ts";
+import { intervalBetween, intervalName, intervalOfSemitones, intervalText, JUST_RATIOS, numberNameBetween, semitones, transpose } from "../../../shared/music/intervals.ts";
 import { freqOf, fromMidi, isBlackKey, parsePitch, parsePitchClass, pc, pcLabel, pcOfClass, pitchLabel, toMidi, type Pitch } from "../../../shared/music/notes.ts";
 import { SCALES, scaleNotes, stepLabel, stepPattern } from "../../../shared/music/scales.ts";
 import { clefFor } from "../../../shared/music/staff.ts";
@@ -14,6 +14,7 @@ import { ChordBox } from "./ChordBox.tsx";
 import { Fretboard, type FretMark } from "./Fretboard.tsx";
 import { Keyboard, type KeyMark } from "./Keyboard.tsx";
 import { Score, type ScoreClef, type ScoreItem, type Tone } from "./Score.tsx";
+import { usePressWord } from "../touch.ts";
 
 // The linked views: the same notes on staff, keyboard, fretboard and tab at
 // once. Everything that shows "these notes" in the app goes through
@@ -82,16 +83,47 @@ export interface LinkedViewsProps {
   labels?: boolean;
   diagram?: string;
   typing?: boolean;
+  /** Sounding pitches for the staff when they differ from `notes` (the six
+   *  strings of a guitar chord rather than its three note names). */
+  staffNotes?: Pitch[];
 }
 
-export function LinkedViews({ notes, views, clef, keySig, chord, active, tone = "pc", onPick, fretMarks, muted, frets = 12, tabPositions, keyMidis, keyRange, labels = true, diagram, typing }: LinkedViewsProps) {
+/** Guitar views only (no keyboard): the staff is then guitar notation. */
+export const guitarOnly = (views: View[]) => !views.includes("keyboard") && (views.includes("fretboard") || views.includes("tab") || views.includes("diagram"));
+/** A sounding pitch as guitar music writes it: an octave higher. */
+const written = (p: Pitch): Pitch => ({ ...p, oct: p.oct + GUITAR_WRITTEN_OFFSET / 12 });
+const sounding = (p: Pitch): Pitch => ({ ...p, oct: p.oct - GUITAR_WRITTEN_OFFSET / 12 });
+
+/** Spell a MIDI note the way a set of already-spelled notes spells its pitch
+ *  class (the B♭ of C7 stays B♭ on every string), falling back to a sharp. */
+export function spellLike(midi: number, spelled: Pitch[]): Pitch {
+  const like = spelled.find((p) => pc(toMidi(p)) === pc(midi));
+  if (!like) return fromMidi(midi);
+  const oct = like.oct + Math.round((midi - toMidi(like)) / 12);
+  return { letter: like.letter, acc: like.acc, oct };
+}
+
+export function LinkedViews({ notes, views, clef, keySig, chord, active, tone = "pc", onPick, fretMarks, muted, frets = 12, tabPositions, keyMidis, keyRange, labels = true, diagram, typing, staffNotes }: LinkedViewsProps) {
   const midis = notes.map(toMidi);
-  const staffClef = clef ?? clefForNotes(notes);
+  // With guitar views only, the staff is guitar notation: treble clef, written
+  // an octave above the sound. Everything else here stays in sounding pitch.
+  // An explicit `clef` is ignored then (guitar music is only ever written in
+  // the treble clef; a bass or grand staff would be a different instrument's
+  // notation). Under such a staff a note is captioned with its letter name
+  // alone: an octave number would have to be either the written one (not what
+  // sounds) or the sounding one (not what is drawn), and the line under the
+  // staff says which is which.
+  const guitar = guitarOnly(views);
+  const onStaff = staffNotes ?? notes;
+  const staffMidis = onStaff.map(toMidi);
+  const staffPitches = guitar ? onStaff.map(written) : onStaff;
+  const staffClef = guitar ? "treble" : (clef ?? clefForNotes(onStaff));
+  const staffTimbre: Timbre = guitar ? "guitar" : "piano";
   const items: ScoreItem[] = chord
-    ? notes.length
-      ? [{ pitches: notes, tone: active != null ? "accent" : undefined }]
+    ? staffPitches.length
+      ? [{ pitches: staffPitches, tone: active != null ? "accent" : undefined }]
       : []
-    : notes.map((p, i) => ({ pitches: [p], label: labels ? pitchLabel(p) : undefined, tone: active === i ? "accent" : undefined }));
+    : staffPitches.map((p, i) => ({ pitches: [p], label: labels ? (guitar ? pcLabel(onStaff[i]) : pitchLabel(onStaff[i])) : undefined, tone: active === i ? "accent" : undefined }));
   const kb = keyMidis ?? midis;
   const range = keyRange ?? keyboardRange(kb);
   const keyMarks: KeyMark[] = kb.map((m, i) => ({ midi: m, tone: active != null && (chord || midis[active] === m) ? "accent" : tone, label: labels ? pcLabel(notes[i] && toMidi(notes[i]) === m ? notes[i] : fromMidi(m)) : undefined }));
@@ -112,12 +144,27 @@ export function LinkedViews({ notes, views, clef, keySig, chord, active, tone = 
         const pos = tabPositions ? tabPositions[i] : easiestPosition(toMidi(p), frets);
         return { pitches: [], tab: pos ? [pos] : [], tone: active === i ? "accent" : undefined };
       });
-  const outOfRange = (views.includes("fretboard") || views.includes("tab")) && !fretMarks && midis.some((m) => positionsOf(m, 24).length === 0);
+  const outOfRange = (views.includes("fretboard") || views.includes("tab")) && !fretMarks && midis.some((m) => positionsOf(m, GUITAR_FRETS).length === 0);
 
   return (
     <div className="flex flex-col gap-4">
       {views.map((v) => {
-        if (v === "staff") return <Score key={v} clef={staffClef} items={items} keySig={keySig} tone={tone} active={chord ? null : active} onPick={onPick ? (p) => onPick(toMidi(p), p) : undefined} onItemClick={chord ? () => playChord(midis, { timbre: "piano" }) : (i) => playNote(midis[i], { timbre: "piano" })} finalBar={false} />;
+        if (v === "staff")
+          return (
+            <div key={v}>
+              <Score
+                clef={staffClef}
+                items={items}
+                keySig={keySig}
+                tone={tone}
+                active={chord ? null : active}
+                onPick={onPick ? (p) => { const s = guitar ? sounding(p) : p; onPick(toMidi(s), s); } : undefined}
+                onItemClick={chord ? () => playChord(staffMidis, { timbre: staffTimbre, strum: guitar ? 0.04 : 0 }) : (i) => playNote(staffMidis[i], { timbre: staffTimbre })}
+                finalBar={false}
+              />
+              {guitar && staffPitches.length > 0 && <p className="mt-1 text-center text-xs text-fg-3">Guitar music is written an octave higher than it sounds{onStaff.length === 1 ? `: this note sounds as ${pitchLabel(onStaff[0])}` : ""}.</p>}
+            </div>
+          );
         if (v === "keyboard") return <Keyboard key={v} lo={range[0]} hi={range[1]} marks={keyMarks} labels={labels ? "c" : "none"} onPress={onPick ? (m) => onPick(m) : undefined} typing={typing} />;
         if (v === "fretboard") return <Fretboard key={v} frets={frets} marks={marks} muted={muted} labels="open" onPress={onPick ? (_p, m) => onPick(m) : undefined} />;
         if (v === "tab") return <Score key={v} clef="none" tab items={tabItems} active={chord ? null : active} finalBar={false} ariaLabel="Guitar tablature" />;
@@ -129,31 +176,12 @@ export function LinkedViews({ notes, views, clef, keySig, chord, active, tone = 
   );
 }
 
-function usePlayback(): [number | null, (sound: Sound, timbre?: Timbre) => void, () => void, boolean] {
-  const [active, setActive] = useState<number | null>(null);
-  const [playing, setPlaying] = useState(false);
-  const pb = useRef<Playback | null>(null);
-  const stop = () => {
-    pb.current?.stop();
-    pb.current = null;
-    setActive(null);
-    setPlaying(false);
-  };
-  const play = (sound: Sound, timbre?: Timbre) => {
-    stop();
-    setPlaying(true);
-    pb.current = playSound(sound, { timbre, onEvent: setActive, onEnd: () => { setActive(null); setPlaying(false); } });
-  };
-  useEffect(() => () => pb.current?.stop(), []);
-  return [active, play, stop, playing];
-}
-
 const parseViews = (p: Record<string, unknown>, d: View[]): View[] => list<View>(p, "views", d);
-const guitarOnly = (views: View[]) => !views.includes("keyboard") && (views.includes("fretboard") || views.includes("tab") || views.includes("diagram"));
 
 // --- linked ----------------------------------------------------------------
 
 export function LinkedWidget({ params }: WidgetProps) {
+  const word = usePressWord();
   const initial = useMemo(() => list<string>(params, "notes", ["C4"]).map(parsePitch), [params]);
   const [notes, setNotes] = useState(initial);
   useEffect(() => setNotes(initial), [initial]);
@@ -176,7 +204,7 @@ export function LinkedWidget({ params }: WidgetProps) {
   return (
     <WidgetFrame
       title={single ? <span className="flex items-center gap-2"><NoteChip midi={toMidi(single)}>{pcLabel(single)}</NoteChip> {pitchLabel(single)} <span className="font-sans text-sm font-normal text-fg-3">{freqOf(toMidi(single)).toFixed(1)} Hz</span></span> : notes.map(pitchLabel).join("  ")}
-      hint={interactive ? "Click a key, a fret or the staff" : undefined}
+      hint={interactive ? `${word.Press} a key, a fret or the staff` : undefined}
       controls={
         <>
           <PlayButton size={34} onClick={() => (chord ? playChord(notes.map(toMidi), { timbre, strum: timbre === "guitar" ? 0.04 : 0 }) : notes.forEach((n, i) => playNote(toMidi(n), { timbre, delay: i * 0.45 })))} />
@@ -192,6 +220,7 @@ export function LinkedWidget({ params }: WidgetProps) {
 // --- interval --------------------------------------------------------------
 
 export function IntervalWidget({ params }: WidgetProps) {
+  const word = usePressWord();
   const from = useMemo(() => parsePitch(str(params, "from", "C4")), [params]);
   const to0 = useMemo(() => parsePitch(str(params, "to", "G4")), [params]);
   const [to, setTo] = useState(to0);
@@ -202,20 +231,30 @@ export function IntervalWidget({ params }: WidgetProps) {
   const hi = toMidi(to);
   let name = "";
   let text = "";
-  try {
-    const iv = intervalBetween(from, to);
+  {
+    const iv = intervalBetween(from, to); // never throws: an unnameable pair falls back to the everyday interval of its size
     text = intervalText(iv);
     name = intervalName(iv);
-  } catch {
-    name = `${Math.abs(hi - lo)} half steps`;
   }
   const semis = Math.abs(hi - lo);
   const ratio = JUST_RATIOS[text];
+  // Before qualities are taught: the number alone ("third"), nothing that
+  // tells a major third from a minor one.
+  const labelMode = str(params, "labels", "names");
+  const numbersOnly = labelMode === "numbers";
+  // Before intervals have names at all: only how far apart, in steps.
+  const stepsOnly = labelMode === "steps";
+  if (numbersOnly) name = lo === hi ? "unison" : numberNameBetween(from, to);
+  const halves = Math.abs(hi - lo);
+  const wholes = halves / 2;
+  const stepsText = halves === 0 ? "the same note" : halves === 1 ? "1 half step" : `${halves} half steps`;
+  if (stepsOnly) name = stepsText;
   const pick = (midi: number, spelled?: Pitch) => {
     if (midi === lo) return;
     let p = spelled ?? fromMidi(midi);
     // From the keyboard there is no spelling: use the one the interval's usual name implies.
     if (!spelled && midi > lo && midi - lo <= 12) p = transpose(from, intervalOfSemitones(midi - lo));
+    if (!spelled && (numbersOnly || stepsOnly) && !isBlackKey(midi)) p = fromMidi(midi); // a white key is its own letter: the count stays honest
     playNote(lo, { timbre: "piano" });
     playNote(midi, { timbre: "piano", delay: 0.45 });
     setTo(p);
@@ -223,8 +262,8 @@ export function IntervalWidget({ params }: WidgetProps) {
   const timbre: Timbre = guitarOnly(views) ? "guitar" : "piano";
   return (
     <WidgetFrame
-      title={<span className="capitalize">{name}</span>}
-      hint={interactive ? "Click another note to move the upper one" : undefined}
+      title={<span className={stepsOnly ? undefined : "capitalize"}>{stepsOnly ? `${name[0].toUpperCase()}${name.slice(1)} apart` : name}</span>}
+      hint={interactive ? `${word.Press} another note to move the upper one` : undefined}
       controls={
         <>
           <Button size="sm" onClick={() => { playNote(Math.min(lo, hi), { timbre }); playNote(Math.max(lo, hi), { timbre, delay: 0.55 }); }}>Play one after the other</Button>
@@ -234,9 +273,17 @@ export function IntervalWidget({ params }: WidgetProps) {
     >
       <div className="mb-3 flex flex-wrap items-center gap-x-5 gap-y-1 text-sm text-fg-2">
         <span className="flex items-center gap-1.5"><NoteChip midi={lo}>{pcLabel(from)}</NoteChip>→<NoteChip midi={hi}>{pcLabel(to)}</NoteChip></span>
-        <span><strong className="text-fg">{semis}</strong> half step{semis === 1 ? "" : "s"}</span>
-        {ratio && <span>frequency ratio about <strong className="text-fg">{ratio[0]}:{ratio[1]}</strong></span>}
-        <span className="text-fg-3">{freqOf(Math.min(lo, hi)).toFixed(1)} Hz and {freqOf(Math.max(lo, hi)).toFixed(1)} Hz</span>
+        {stepsOnly ? (
+          <span><strong className="text-fg">{stepsText}</strong>{halves >= 2 && <> ({Number.isInteger(wholes) ? `${wholes} whole step${wholes === 1 ? "" : "s"}` : `${Math.floor(wholes)} whole step${Math.floor(wholes) === 1 ? "" : "s"} and a half step`})</>} apart: count every key or fret from one note to the other</span>
+        ) : numbersOnly ? (
+          <span>count the letter names, both ends included: <strong className="text-fg">{name}</strong></span>
+        ) : (
+          <>
+            <span><strong className="text-fg">{semis}</strong> half step{semis === 1 ? "" : "s"}</span>
+            {ratio && <span>frequency ratio about <strong className="text-fg">{ratio[0]}:{ratio[1]}</strong></span>}
+            <span className="text-fg-3">{freqOf(Math.min(lo, hi)).toFixed(1)} Hz and {freqOf(Math.max(lo, hi)).toFixed(1)} Hz</span>
+          </>
+        )}
       </div>
       <LinkedViews notes={lo <= hi ? [from, to] : [to, from]} views={views} onPick={interactive ? pick : undefined} />
     </WidgetFrame>
@@ -246,6 +293,20 @@ export function IntervalWidget({ params }: WidgetProps) {
 // --- scale -----------------------------------------------------------------
 
 const TONICS = ["C", "Db", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B"];
+// A scale or chord with a minor third is spelled from the sharp side where
+// the flat spelling would need double flats (D♭ minor has a B𝄫; C♯ minor is
+// the key musicians actually use).
+const MINOR_TONICS = ["C", "C#", "D", "Eb", "E", "F", "F#", "G", "G#", "A", "Bb", "B"];
+const tonicsFor = (intervals: readonly string[]): string[] => (intervals.includes("m3") ? MINOR_TONICS : TONICS);
+/** The same pitch as `tonic`, spelled as this list spells it. */
+const respell = (tonic: string, list: string[]): string => {
+  try {
+    const want = pcOfClass(parsePitchClass(tonic));
+    return list.find((t) => pcOfClass(parsePitchClass(t)) === want) ?? tonic;
+  } catch {
+    return tonic;
+  }
+};
 const SCALE_CHOICES = ["major", "natural-minor", "major-pentatonic", "minor-pentatonic", "blues", "harmonic-minor", "dorian", "mixolydian"];
 
 /** Scale notes in a comfortable octave: around middle C for staff and keys,
@@ -277,7 +338,23 @@ export function ScaleWidget({ params }: WidgetProps) {
   const notes = useMemo(() => scaleFor(tonic, type, guitar), [tonic, type, guitar]);
   const midis = notes.map(toMidi);
   const steps = stepPattern(type);
-  const [active, play, stop, playing] = usePlayback();
+  const tonics = tonicsFor(SCALES[type].intervals);
+  // Choosing another kind of scale keeps the starting pitch and respells it
+  // for that kind (D♭ major ↔ C♯ minor).
+  const pickType = (t: string) => {
+    setType(t);
+    setTonic((cur) => respell(cur, tonicsFor(SCALES[t].intervals)));
+  };
+  const [active, setActive] = useState<number | null>(null);
+  const holder = useRef<Playback | null>(null);
+  const stop = () => {
+    holder.current?.stop();
+    holder.current = null;
+    setActive(null);
+  };
+  useEffect(() => () => holder.current?.stop(), []);
+  // A new scale: whatever run was sounding belonged to the old one.
+  useEffect(() => stop, [tonic, type]);
   const pcs = new Set(midis.map(pc));
   const rootPc = pc(midis[0]);
   const boxFrets = Number(params.frets) || 12;
@@ -285,16 +362,11 @@ export function ScaleWidget({ params }: WidgetProps) {
   const run = (down: boolean) => {
     const seq = down ? [...midis].reverse() : midis;
     const idx = down ? midis.map((_, i) => midis.length - 1 - i) : midis.map((_, i) => i);
-    stop();
-    const pb = playSound({ tempo: 132, events: seq.map((m, i) => ({ midis: [m], at: i, beats: 1 })) }, { timbre, onEvent: (i) => setActiveIdx(idx[i]), onEnd: () => setActiveIdx(null) });
-    holder.current = pb;
+    stop(); // one run at a time: "Play down" during "Play up" replaces it
+    // A down-run plays the same notes backwards, so its events map back to front.
+    holder.current = playSound({ tempo: 132, events: seq.map((m, i) => ({ midis: [m], at: i, beats: 1 })) }, { timbre, onEvent: (i) => setActive(idx[i]), onEnd: () => { holder.current = null; setActive(null); } });
   };
-  // usePlayback tracks its own index; scales also need down-runs mapped back.
-  const [activeIdx, setActiveIdx] = useState<number | null>(null);
-  const holder = useRef<Playback | null>(null);
-  useEffect(() => () => holder.current?.stop(), []);
-  void play; void playing;
-  const current = activeIdx ?? active;
+  const current = active;
   return (
     <WidgetFrame
       title={`${pcLabel(parsePitchClass(tonic))} ${SCALES[type].name} scale`}
@@ -305,12 +377,12 @@ export function ScaleWidget({ params }: WidgetProps) {
           {interactive && (
             <>
               <label className="flex items-center gap-1.5 text-sm text-fg-2">Start on
-                <select value={tonic} onChange={(e) => setTonic(e.target.value)} className="rounded-md border border-line bg-panel px-1.5 py-1 text-fg">
-                  {(TONICS.includes(tonic) ? TONICS : [tonic, ...TONICS]).map((t) => <option key={t} value={t}>{pcLabel(parsePitchClass(t))}</option>)}
+                <select value={tonic} onChange={(e) => setTonic(e.target.value)} className="rounded-md border border-line bg-panel px-1.5 py-1 text-fg pointer-coarse:px-2.5 pointer-coarse:py-2 pointer-coarse:text-base">
+                  {(tonics.includes(tonic) ? tonics : [tonic, ...tonics]).map((t) => <option key={t} value={t}>{pcLabel(parsePitchClass(t))}</option>)}
                 </select>
               </label>
               <label className="flex items-center gap-1.5 text-sm text-fg-2">Scale
-                <select value={type} onChange={(e) => setType(e.target.value)} className="rounded-md border border-line bg-panel px-1.5 py-1 text-fg">
+                <select value={type} onChange={(e) => pickType(e.target.value)} className="rounded-md border border-line bg-panel px-1.5 py-1 text-fg pointer-coarse:px-2.5 pointer-coarse:py-2 pointer-coarse:text-base">
                   {(SCALE_CHOICES.includes(type) ? SCALE_CHOICES : [type, ...SCALE_CHOICES]).map((t) => <option key={t} value={t}>{SCALES[t].name}</option>)}
                 </select>
               </label>
@@ -322,7 +394,7 @@ export function ScaleWidget({ params }: WidgetProps) {
       <div className="mb-4 flex flex-wrap items-center gap-y-2" aria-label="Step pattern">
         {notes.map((n, i) => (
           <span key={i} className="flex items-center">
-            <button type="button" onClick={() => playNote(midis[i], { timbre })} className={cx("rounded-full transition-transform", current === i && "scale-125")}>
+            <button type="button" onClick={() => playNote(midis[i], { timbre })} className={cx("rounded-full transition-transform pointer-coarse:p-1.5", current === i && "scale-125")}>
               <NoteChip midi={midis[i]}>{pcLabel(n)}</NoteChip>
             </button>
             {i < steps.length && (
@@ -347,14 +419,16 @@ const CHORD_TYPE_CHOICES = ["maj", "min", "dim", "aug", "7", "maj7", "m7", "sus4
 export function ChordView({ symbol, views, active }: { symbol: string; views: View[]; active?: boolean }) {
   const ref = parseChord(symbol);
   const rootPc = pcOfClass(ref.root);
-  const spelled = chordNotes(ref, rootPc >= 7 ? 3 : 4);
+  const guitar = guitarOnly(views);
+  const spelled = chordNotes(ref, (rootPc >= 7 ? 3 : 4) - (guitar ? 1 : 0));
   const shape = GUITAR_SHAPES[symbol];
-  const fretMarks: FretMark[] | undefined = shape
-    ? shapePositions(shape).map((pos, i) => ({ ...pos, label: pcLabel(fromMidi(shapeMidis(shape)[i], ref.root.acc < 0 || [1, 3, 8, 10].includes(rootPc) && ref.root.acc !== 1 ? "flat" : "sharp")), tone: active ? "accent" : "pc" }))
-    : undefined;
+  // Every string's note, spelled as the chord spells it: the same names the
+  // staff and the keyboard show (C7's seventh is B♭ on all three, never A♯).
+  const voicing = shape ? shapeMidis(shape).map((m) => spellLike(m, spelled)) : undefined;
+  const fretMarks: FretMark[] | undefined = shape && voicing ? shapePositions(shape).map((pos, i) => ({ ...pos, label: pcLabel(voicing[i]), tone: active ? "accent" : "pc" })) : undefined;
   const muted = shape ? shape.frets.map((f, i) => (f === null ? 6 - i : 0)).filter(Boolean) : undefined;
   const voiced = pianoVoicing(symbol);
-  return <LinkedViews notes={spelled} views={views} chord active={active ? 0 : null} fretMarks={fretMarks ?? spelled.flatMap((p) => positionsOfPc(pc(toMidi(p)), 4).map((pos) => ({ ...pos, label: pcLabel(p) })))} muted={muted} frets={shape ? Math.max(5, ...shape.frets.map((f) => f ?? 0)) : 5} keyMidis={voiced} diagram={symbol} />;
+  return <LinkedViews notes={spelled} views={views} chord active={active ? 0 : null} fretMarks={fretMarks ?? spelled.flatMap((p) => positionsOfPc(pc(toMidi(p)), 4).map((pos) => ({ ...pos, label: pcLabel(p) })))} muted={muted} frets={shape ? Math.max(5, ...shape.frets.map((f) => f ?? 0)) : 5} keyMidis={voiced} diagram={symbol} staffNotes={guitar ? voicing : undefined} />;
 }
 
 export function strumMidis(symbol: string): number[] {
@@ -374,7 +448,8 @@ export function ChordWidget({ params }: WidgetProps) {
   const sound = () => (guitar ? playChord(strumMidis(symbol), { timbre: "guitar", strum: 0.045, duration: 2.2 }) : playChord(pianoVoicing(symbol), { timbre: "piano", duration: 1.8 }));
   const arpeggio = () => (guitar ? strumMidis(symbol) : pianoVoicing(symbol)).forEach((m, i) => playNote(m, { timbre: guitar ? "guitar" : "piano", delay: i * 0.38 }));
   const rootName = `${ref.root.letter}${ref.root.acc > 0 ? "#" : ref.root.acc < 0 ? "b" : ""}`;
-  const set = (root: string, type: string) => setSymbol(root + CHORDS[type].suffix);
+  const roots = tonicsFor(def.intervals);
+  const set = (root: string, type: string) => setSymbol(respell(root, tonicsFor(CHORDS[type].intervals)) + CHORDS[type].suffix);
   const parts: ReactNode[] = notes.map((n, i) => {
     const gap = i === 0 ? null : semitones(def.intervals[i]) - semitones(def.intervals[i - 1]);
     return (
@@ -397,8 +472,8 @@ export function ChordWidget({ params }: WidgetProps) {
           {interactive && (
             <>
               <label className="flex items-center gap-1.5 text-sm text-fg-2">Root
-                <select value={TONICS.includes(rootName) ? rootName : rootName} onChange={(e) => set(e.target.value, ref.type)} className="rounded-md border border-line bg-panel px-1.5 py-1 text-fg">
-                  {(TONICS.includes(rootName) ? TONICS : [rootName, ...TONICS]).map((t) => <option key={t} value={t}>{pcLabel(parsePitchClass(t))}</option>)}
+                <select value={rootName} onChange={(e) => set(e.target.value, ref.type)} className="rounded-md border border-line bg-panel px-1.5 py-1 text-fg pointer-coarse:px-2.5 pointer-coarse:py-2 pointer-coarse:text-base">
+                  {(roots.includes(rootName) ? roots : [rootName, ...roots]).map((t) => <option key={t} value={t}>{pcLabel(parsePitchClass(t))}</option>)}
                 </select>
               </label>
               <Segmented label="Chord type" value={ref.type} onChange={(t) => set(rootName, t)} options={(CHORD_TYPE_CHOICES.includes(ref.type) ? CHORD_TYPE_CHOICES : [ref.type, ...CHORD_TYPE_CHOICES]).map((t) => ({ value: t, label: CHORDS[t].name.replace("dominant ", "").replace("suspended fourth", "sus4") }))} />

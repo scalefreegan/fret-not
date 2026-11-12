@@ -18,8 +18,18 @@ declare module "*/scripts/claude.mjs" {
     durationMs: number | null;
     usage: Record<string, unknown> | null;
     permissionDenials: unknown[];
+    /** Absolute paths the run's Write/Edit calls named (may have written). */
+    writes: string[];
     raw: Record<string, unknown>;
   }
+  /** Run `hook` (synchronously) on a fatal signal, after live agents are
+   *  killed; returns a function that removes it. */
+  export function onFatalSignal(hook: () => void): () => void;
+  export function sleepSync(ms: number): void;
+  /** Delete old per-run temp directories (prompt + MCP config); returns how many. */
+  export function sweepPromptDirs(opts?: { maxAgeMs?: number; now?: number; tmp?: string }): number;
+  /** What a fatal signal does: kill live agents, run the hooks, arrange the exit. */
+  export function reapOnSignal(code: number, opts?: { exit?: (code: number) => void; graceMs?: number }): ReturnType<typeof setTimeout>;
   /** Spawns `claude -p` in the sandbox buildArgs() pins (see the test).
    *  `kill()` and `signal` both SIGKILL the process group. */
   export function startClaude(opts: {
@@ -30,9 +40,11 @@ declare module "*/scripts/claude.mjs" {
     signal?: AbortSignal;
     maxTurns?: number;
     timeoutSec?: number;
-    tools?: "content" | "none";
+    tools?: "content" | "read" | "none";
     /** The only directory Edit/Write are granted for; must be inside repoRoot. */
     contentDir?: string;
     repoRoot?: string;
-  }): { result: Promise<ClaudeResult>; kill: () => void };
+    /** Called as each Write/Edit call appears in the stream. */
+    onWrite?: (absPath: string) => void;
+  }): { result: Promise<ClaudeResult>; kill: () => void; pid: number | null };
 }

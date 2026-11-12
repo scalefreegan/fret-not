@@ -73,7 +73,7 @@ The keyboard is the clearest picture of the notes, so the core lessons use it ev
 
 ## The same note everywhere
 
-A note's name does not depend on the instrument. Click different keys below and watch the same note appear on the guitar's fretboard.
+A note's name does not depend on the instrument. Press different keys below and watch the same note appear on the guitar's fretboard.
 
 ```widget
 type: linked

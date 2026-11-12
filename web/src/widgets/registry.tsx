@@ -48,8 +48,8 @@ export const WIDGET_EXAMPLES: Record<string, Record<string, unknown>[]> = {
   "chord-diagram": [{ chords: ["Em", "Am", "C", "G", "D", "F"] }],
   "circle-of-fifths": [{}],
   metronome: [{}],
-  rhythm: [{ pattern: "q q e e q | h qr q" }, { pattern: "q. e q q | e e e e h", tap: true }],
-  melody: [{ title: "Ode to Joy (Beethoven)", notes: "E4:q E4:q F4:q G4:q | G4:q F4:q E4:q D4:q | C4:q C4:q D4:q E4:q | E4:q. D4:e D4:h" }],
-  tab: [{ notes: "6/0:q 6/3:q 5/0:q 5/2:q | 4/0:q 4/2:q 3/0:h" }],
+  rhythm: [{ pattern: "q q e e q | h qr q" }, { pattern: "q. e q q | e e e e h", tap: true }, { pattern: "s s s s e. s s e. e s s | s e s e sr s q", count: false }, { time: "6/8", pattern: "e e e e s s e | s s s s s s q. | e. s e q e" }],
+  melody: [{ title: "Ode to Joy (Beethoven)", notes: "E4:q E4:q F4:q G4:q | G4:q F4:q E4:q D4:q | C4:q C4:q D4:q E4:q | E4:q. D4:e D4:h" }, { title: "Beams", notes: "G4:e | C5:s B4:s A4:s G4:s F4:e. E4:s D4:e C4:e E4:s G4:s C5:e | A5:e. G5:s F5:s E5:e D5:s C4:s E4:e G4:s B4:q" }, { title: "Beams in six-eight, bass", clef: "bass", time: "6/8", notes: "C3:e E3:s G3:s C4:e B3:e. A3:s G3:e | F3:s E3:s D3:s C3:s B2:e C3:q." }],
+  tab: [{ notes: "6/0:q 6/3:q 5/0:q 5/2:q | 4/0:q 4/2:q 3/0:h" }, { notes: "6/0:s 6/3:s 5/0:s 5/2:s 4/0:e. 4/2:s 3/0:e 3/2:e 2/0:q" }],
   progression: [{ chords: "I V vi IV", key: "C" }, { chords: "Em C G D", instrument: "guitar", views: ["diagram", "fretboard"] }],
 };

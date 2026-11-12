@@ -5,6 +5,7 @@ import { Button, PlayButton, WidgetFrame, cx, pcColor } from "../../ui.tsx";
 import { num, str } from "../params.ts";
 import type { WidgetProps } from "../types.ts";
 import { fmtHz, useHeldSound, wavePath } from "./common.ts";
+import { useCoarse } from "../touch.ts";
 
 // One slider per harmonic. The waveform drawn is Σ aₙ·sin(2π·n·x), the same
 // sum the audio engine plays.
@@ -20,6 +21,8 @@ const PRESETS: Record<string, { label: string; amp: (n: number) => number }> = {
   piano: { label: "Piano-like", amp: (n) => [1, 0.62, 0.34, 0.26, 0.16, 0.1, 0.03, 0.06, 0.04, 0.03, 0.02, 0.02][n - 1] ?? 0.01 },
   guitar: { label: "Guitar-like", amp: (n) => Math.sin((n * Math.PI) / 5) / n / Math.sin(Math.PI / 5) },
 };
+
+const STEP = "grid h-11 w-11 shrink-0 place-items-center rounded-lg border border-line bg-panel text-xl font-bold text-fg active:bg-raised disabled:opacity-40";
 
 export function HarmonicMixer({ params }: WidgetProps) {
   const baseMidi = midiOf(str(params, "note", "A2"));
@@ -49,6 +52,13 @@ export function HarmonicMixer({ params }: WidgetProps) {
     });
   };
 
+  const coarse = useCoarse();
+  /** Set one harmonic's level (0–100), keeping its sign. */
+  const setLevel = (i: number, pct: number) => {
+    const v = Math.max(0, Math.min(100, pct)) / 100;
+    update(amps.map((old, k) => (k === i ? (old < 0 ? -v : v) : old)), null);
+  };
+
   const raw = (x: number) => amps.reduce((s, a, i) => s + a * Math.sin(2 * Math.PI * (i + 1) * 2 * x), 0);
   // Fit the tallest point of the wave to the frame, but never magnify a quiet mix.
   let peak = 1;
@@ -59,7 +69,7 @@ export function HarmonicMixer({ params }: WidgetProps) {
   return (
     <WidgetFrame
       title="Mix your own tone"
-      hint={`Each slider is one harmonic of ${fmtHz(f0)}.`}
+      hint={`Each ${coarse ? "row" : "slider"} is one harmonic of ${fmtHz(f0)}.`}
       controls={
         <>
           <PlayButton playing={held.playing} onClick={play} label="Play this mix" />
@@ -79,34 +89,59 @@ export function HarmonicMixer({ params }: WidgetProps) {
         <path d={wavePath(wave, 640, 170, 68, 480)} fill="none" stroke="var(--ink)" strokeWidth={2.8} strokeLinejoin="round" />
       </svg>
       <p className="text-center text-xs text-fg-3">Two cycles of the combined wave ({(2000 / f0).toFixed(1)} thousandths of a second)</p>
-      <div className="mt-3 flex justify-between gap-1 @lg:gap-2">
-        {amps.map((a, i) => {
-          const n = i + 1;
-          return (
-            <label key={n} className="flex min-w-0 flex-1 flex-col items-center gap-1">
-              <span className="relative block h-32 w-full max-w-10 overflow-hidden rounded-lg border border-line bg-raised">
-                <span className={cx("absolute inset-x-0 bottom-0 rounded-b-md")} style={{ height: `${Math.abs(a) * 100}%`, background: color(n) }} />
-                <input
-                  type="range"
-                  min={0}
-                  max={100}
-                  value={Math.round(Math.abs(a) * 100)}
-                  onChange={(e) => {
-                    const v = Number(e.target.value) / 100;
-                    update(amps.map((old, k) => (k === i ? (old < 0 ? -v : v) : old)), null);
-                  }}
-                  aria-label={`Harmonic ${n}, ${fmtHz(f0 * n)}`}
-                  className="absolute inset-0 h-full w-full cursor-ns-resize opacity-0"
-                  style={{ writingMode: "vertical-lr", direction: "rtl" }}
-                />
-              </span>
-              <span className="text-sm font-bold text-fg">{n}</span>
-              <span className="hidden font-mono text-[0.65rem] text-fg-3 tabular-nums @lg:block">{Math.round(f0 * n)}</span>
-            </label>
-          );
-        })}
-      </div>
-      <p className="mt-2 text-center text-xs text-fg-3">Drag a bar up or down. The number under each bar is the harmonic; the small figure is its frequency in Hz.</p>
+      {coarse ? (
+        // Under a finger: a row per harmonic with a level bar and two big
+        // buttons. A dragged bar would take the swipe that scrolls the page.
+        <ul className="mt-3 grid gap-1.5 @lg:grid-cols-2 @lg:gap-x-5">
+          {amps.map((a, i) => {
+            const n = i + 1;
+            const pct = Math.round(Math.abs(a) * 100);
+            return (
+              <li key={n} className="flex items-center gap-2" role="group" aria-label={`Harmonic ${n}, ${fmtHz(f0 * n)}, level ${pct} percent`}>
+                <span className="w-5 shrink-0 text-right text-sm font-bold text-fg">{n}</span>
+                <button type="button" className={STEP} aria-label={`Harmonic ${n} quieter`} disabled={pct === 0} onClick={() => setLevel(i, pct - 10)}>
+                  −
+                </button>
+                <span className="relative block h-7 min-w-0 flex-1 overflow-hidden rounded-lg border border-line bg-raised" aria-hidden="true">
+                  <span className="absolute inset-y-0 left-0" style={{ width: `${pct}%`, background: color(n) }} />
+                </span>
+                <button type="button" className={STEP} aria-label={`Harmonic ${n} louder`} disabled={pct === 100} onClick={() => setLevel(i, pct + 10)}>
+                  +
+                </button>
+                <span className="w-14 shrink-0 text-right font-mono text-[0.7rem] text-fg-3 tabular-nums">{Math.round(f0 * n)} Hz</span>
+              </li>
+            );
+          })}
+        </ul>
+      ) : (
+        <div className="mt-3 flex justify-between gap-1 @lg:gap-2">
+          {amps.map((a, i) => {
+            const n = i + 1;
+            return (
+              <label key={n} className="flex min-w-0 flex-1 flex-col items-center gap-1">
+                <span className="relative block h-32 w-full max-w-10 overflow-hidden rounded-lg border border-line bg-raised">
+                  <span className={cx("absolute inset-x-0 bottom-0 rounded-b-md")} style={{ height: `${Math.abs(a) * 100}%`, background: color(n) }} />
+                  <input
+                    type="range"
+                    min={0}
+                    max={100}
+                    value={Math.round(Math.abs(a) * 100)}
+                    onChange={(e) => setLevel(i, Number(e.target.value))}
+                    aria-label={`Harmonic ${n}, ${fmtHz(f0 * n)}`}
+                    className="absolute inset-0 h-full w-full cursor-ns-resize opacity-0"
+                    style={{ writingMode: "vertical-lr", direction: "rtl" }}
+                  />
+                </span>
+                <span className="text-sm font-bold text-fg">{n}</span>
+                <span className="hidden font-mono text-[0.65rem] text-fg-3 tabular-nums @lg:block">{Math.round(f0 * n)}</span>
+              </label>
+            );
+          })}
+        </div>
+      )}
+      <p className="mt-2 text-center text-xs text-fg-3">
+        {coarse ? "− and + turn one harmonic down or up. The number on the left is the harmonic; on the right is its frequency." : <>Drag a bar up or down. The number under each bar is the harmonic<span className="hidden @lg:inline">; the small figure is its frequency in Hz</span>.</>}
+      </p>
     </WidgetFrame>
   );
 }

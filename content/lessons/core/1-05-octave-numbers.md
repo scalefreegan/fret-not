@@ -70,7 +70,7 @@ That is the one thing that trips people up. The alphabet starts at A, but the oc
 
 **C4** is known as **middle C**. It sits near the middle of the piano keyboard, at about 261.6 Hz, and it is the usual reference point for finding everything else. The A that orchestras tune to, 440 Hz, is **A4**: the A above middle C.
 
-Click around the instruments below and watch the octave number in the note's name.
+Press notes on the instruments below and watch the octave number in the note's name.
 
 ```widget
 type: linked

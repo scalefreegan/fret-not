@@ -31,7 +31,7 @@ exercises:
       - q: The open string 1 is E4. Where else can exactly that pitch be played?
         choices: [String 2 fret 5 and string 3 fret 9, String 6 fret 12, String 2 fret 4]
         answer: 1
-        explain: E4 is at string 2 fret 5 and string 3 fret 9. String 6 fret 12 is also an E, but it is E3, an octave lower.
+        explain: "E4 is at string 2 fret 5 and string 3 fret 9 (and, higher up the neck than this lesson goes, at string 4 fret 14 and string 5 fret 19). String 6 fret 12 is also an E, but it is E3, an octave lower."
       - q: How many places can the open low E string's note, E2, be played on the guitar?
         choices: [One, Two, Six]
         answer: 1
@@ -54,6 +54,7 @@ exercises:
     anyOctave: true
   - kind: ear-find-note
     concept: fretboard-unisons
+    vocab: names
     count: 4
     instrument: guitar
     scale: major
@@ -71,7 +72,7 @@ highlight: [E4]
 labels: all
 ```
 
-The open string 1, fret 5 of string 2 and fret 9 of string 3 all give the same E4, at the same frequency of about 329.6 Hz. Listen closely and you will hear that the *tone* is not quite the same. A thicker string pressed high up the neck sounds rounder and darker than a thin open string. The pitch is identical. The timbre is not.
+The open string 1, fret 5 of string 2 and fret 9 of string 3 all give the same E4, at the same frequency of about 329.6 Hz. (Past the twelve frets drawn here there are two more: fret 14 of string 4 and fret 19 of string 5.) Listen closely and you will hear that the *tone* is not quite the same. A thicker string pressed high up the neck sounds rounder and darker than a thin open string. The pitch is identical. The timbre is not.
 
 ## The fifth-fret rule
 
@@ -91,7 +92,7 @@ This is also how a guitar can be tuned to itself: get one string right, then mat
 
 ## Moving a note across strings
 
-The same rule works anywhere on the neck, not only against open strings. To find the same pitch on the next higher string, go **five frets lower** (four when crossing from string 3 to string 2). Click any position below to see every other place that plays the same pitch, and where it sits on the keyboard, where it has only one home.
+The same rule works anywhere on the neck, not only against open strings. To find the same pitch on the next higher string, go **five frets lower** (four when crossing from string 3 to string 2). Press any position below to see every other place that plays the same pitch, and where it sits on the keyboard, where it has only one home.
 
 ```widget
 type: linked
@@ -100,7 +101,7 @@ views: [fretboard, keyboard]
 interactive: true
 ```
 
-Middle C, for example, is at string 2 fret 1, string 3 fret 5 and string 4 fret 10.
+Middle C, for example, is at string 2 fret 1, string 3 fret 5 and string 4 fret 10, and above the twelfth fret at string 5 fret 15 and string 6 fret 20.
 
 ## Same name, different octave
 

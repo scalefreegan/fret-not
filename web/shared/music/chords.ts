@@ -26,6 +26,11 @@ export const CHORDS: Record<string, ChordType> = {
   dim7: { name: "diminished seventh", suffix: "dim7", intervals: ["P1", "m3", "d5", "d7"] },
 };
 
+/** Chord types from the most common to the least: the order choices are
+ *  offered in and identifyChord answers in. (Object.keys(CHORDS) cannot be
+ *  used for this: JavaScript lists the number-like keys "5", "6", "7" first.) */
+export const CHORD_ORDER: readonly string[] = ["maj", "min", "7", "maj7", "m7", "dim", "aug", "sus4", "sus2", "5", "6", "m6", "m7b5", "dim7"];
+
 export function isChordType(s: unknown): s is string {
   return typeof s === "string" && Object.hasOwn(CHORDS, s);
 }
@@ -94,20 +99,24 @@ export function invert(notes: Pitch[], n: number): Pitch[] {
   return out;
 }
 
+const MAJOR_ROOTS = ["C", "Db", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B"];
+const MINOR_ROOTS = ["C", "C#", "D", "Eb", "E", "F", "F#", "G", "G#", "A", "Bb", "B"];
+
 /** Every chord whose pitch classes are exactly the given set, most common
  *  types first. `bass` (a MIDI note) puts chords rooted on it first. */
 export function identifyChord(midis: number[], bass?: number): ChordRef[] {
   const set = new Set(midis.map(pc));
   if (set.size < 2) return [];
   const out: ChordRef[] = [];
-  for (const type of Object.keys(CHORDS)) {
+  for (const type of CHORD_ORDER) {
+    const shape = chordPcs({ root: { letter: "C", acc: 0 }, type });
+    // The usual spelling of a black-key root depends on the chord: D♭ and A♭
+    // major, but C♯ and G♯ minor (four and five sharps, not eight and seven flats).
+    const minorish = CHORDS[type].intervals[1] === "m3";
+    const names = minorish ? MINOR_ROOTS : MAJOR_ROOTS;
     for (let root = 0; root < 12; root++) {
-      const pcs = CHORDS[type].intervals.map((_, i) => pc(root + chordPcs({ root: { letter: "C", acc: 0 }, type })[i]));
-      if (pcs.length === set.size && pcs.every((p) => set.has(p))) {
-        // Flat spellings for the black-key roots that are usually written flat.
-        const name = ["C", "Db", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B"][root];
-        out.push({ root: parsePitchClass(name), type });
-      }
+      const pcs = shape.map((x) => pc(root + x));
+      if (pcs.length === set.size && pcs.every((p) => set.has(p))) out.push({ root: parsePitchClass(names[root]), type });
     }
   }
   if (bass !== undefined) out.sort((a, b) => Number(pcOfClass(b.root) === pc(bass)) - Number(pcOfClass(a.root) === pc(bass)));
@@ -150,14 +159,32 @@ export function diatonicTriads(key: string): DiatonicChord[] {
   });
 }
 
-/** Resolve a Roman numeral in a key: ("C", "vi") → Am; ("G", "V7") → D7. */
+/** Resolve a Roman numeral in a key: ("C", "vi") → Am; ("G", "V7") → D7.
+ *
+ *  In a minor key the plain numerals stand on the natural minor scale, as
+ *  diatonicTriads writes them: in A minor III = C, VI = F, VII = G. Song
+ *  charts often write those same chords measured from the major scale, as
+ *  ♭III, ♭VI and ♭VII; both spellings are accepted and mean the same chord
+ *  (a flat on 3, 6 or 7 in minor does not lower the root a second time). The
+ *  diminished chord on the seventh degree, vii°, is the one built on the
+ *  raised leading tone (G♯dim in A minor), as harmonic minor gives it; a
+ *  sharp raises the natural-minor degree (♯vi° = F♯dim). */
 export function romanToChord(key: string, roman: string): ChordRef {
   const m = /^(b|#)?(VII|VI|IV|V|III|II|I|vii|vi|iv|v|iii|ii|i)(°|\+|7|maj7|m7)?$/.exec(roman);
   if (!m) throw new Error(`not a Roman numeral: "${roman}"`);
   const k = parseKey(key);
   const scale = scaleNotes({ ...k.tonic, oct: 4 }, k.mode === "minor" ? "natural-minor" : "major");
   const degree = ROMAN.indexOf(m[2].toUpperCase());
-  const root = { letter: scale[degree].letter, acc: scale[degree].acc + (m[1] === "b" ? -1 : m[1] === "#" ? 1 : 0) };
+  let shift = m[1] === "b" ? -1 : m[1] === "#" ? 1 : 0;
+  if (k.mode === "minor") {
+    const alreadyFlat = degree === 2 || degree === 5 || degree === 6; // 3, 6 and 7 of natural minor
+    const writtenFlat = shift === -1;
+    if (writtenFlat && alreadyFlat) shift = 0;
+    // Only the unmarked vii° is the leading-tone chord; a written flat asks
+    // for the chord on the natural-minor seventh (♭vii° = Gdim in A minor).
+    if (shift === 0 && !writtenFlat && degree === 6 && m[3] === "°") shift = 1;
+  }
+  const root = { letter: scale[degree].letter, acc: scale[degree].acc + shift };
   const upper = m[2] === m[2].toUpperCase();
   let type = upper ? "maj" : "min";
   if (m[3] === "°") type = "dim";

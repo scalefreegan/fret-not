@@ -11,7 +11,7 @@ exercises:
   - kind: play-note
     concept: keyboard-pattern
     title: Find a C
-    count: 3
+    count: 1
     instrument: piano
     from: name
     range: [C4, C4]
@@ -19,7 +19,7 @@ exercises:
   - kind: play-note
     concept: keyboard-pattern
     title: Find an F
-    count: 3
+    count: 1
     instrument: piano
     from: name
     range: [F4, F4]
@@ -29,7 +29,7 @@ exercises:
     count: 4
     questions:
       - q: How are the black keys grouped along the keyboard?
-        choices: [In twos and threes, alternating, In threes only, In pairs only]
+        choices: ["In twos and threes, alternating", In threes only, In pairs only]
         answer: 1
         explain: A group of two black keys, then a group of three, then two again, all the way along.
       - q: Where is C?

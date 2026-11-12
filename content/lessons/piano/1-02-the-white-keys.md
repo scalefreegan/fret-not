@@ -64,7 +64,7 @@ Try to know each key by its position, not by counting up from C every time. D is
 
 ## The same key on the page
 
-Click any white key below. Its name appears with its octave number, and you can see where the same note falls on the staff, which Level 2 teaches you to read.
+Press any white key below. Its name appears with its octave number, and you can see where the same note falls on the staff, which Level 2 teaches you to read.
 
 ```widget
 type: linked

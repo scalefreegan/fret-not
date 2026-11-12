@@ -1,8 +1,10 @@
 import type { Stimulus, Timbre } from "../exercise-types.ts";
 import { chordFullName, chordLabel, chordNotes, chordPcs, chordSymbol } from "../music/chords.ts";
-import { fretMidi, GUITAR_SHAPES, pianoVoicing, positionsOf, positionsOfPc, shapeMidis, type FretPos } from "../music/instruments.ts";
+import { fretMidi, GUITAR_FRETS, GUITAR_SHAPES, pianoVoicing, positionsOf, positionsOfPc, shapeMidis, type FretPos } from "../music/instruments.ts";
 import { fromMidi, isBlackKey, isPitchClass, parsePitchClass, pc, pcBothLabels, pcLabel, pcOfClass, pitchLabel, pitchName, toMidi, type PitchClass } from "../music/notes.ts";
-import { countLabel, parseDuration, parseTime } from "../music/rhythm.ts";
+import { countLabel, countUnitBeats, maxTapTempo, parseDuration, parseTime, TAP_TOLERANCE_GAP_SHARE, TAP_TOLERANCE_SECONDS } from "../music/rhythm.ts";
+
+export { TAP_TOLERANCE_GAP_SHARE, TAP_TOLERANCE_SECONDS };
 import { isScaleType, SCALES, scaleNotes, stepLabel, stepPattern } from "../music/scales.ts";
 import type { Clef } from "../music/staff.ts";
 import { chordPool, chordWhy } from "./identify.ts";
@@ -16,7 +18,7 @@ const isGuitar = (p: Params) => pStr(p, "instrument", "piano") === "guitar";
 export const playNote: Generator = (p, rng) => {
   const guitar = isGuitar(p);
   let from = pStr(p, "from", "name");
-  if (from === "tab" && !guitar) from = "name"; // tab is guitar only
+  if (from === "tab" && !guitar) from = "name"; // tab is guitar only (the loader refuses the combination)
   const accidentals = pBool(p, "accidentals", false);
   const anyOctave = pBool(p, "anyOctave", from === "name");
   const clef: Clef = pStr(p, "clef", "treble") === "bass" ? "bass" : "treble";
@@ -25,13 +27,18 @@ export const playNote: Generator = (p, rng) => {
   let midi: number;
   let pos: FretPos | null = null;
   let maxFret = 5;
+  // The frets the lesson has reached (0 = open strings only); the board is
+  // drawn with at least three so it looks like a neck.
+  const askedFret = Math.max(0, Math.min(GUITAR_FRETS, Math.floor(pNum(p, "maxFret", 5))));
+  // One keyboard per declaration, whatever note this question draws: its
+  // range may not hint at the answer.
+  const pianoRange = pRange(p) ?? (from === "staff" ? (clef === "bass" ? [43, 60] : [60, 79]) : [60, 71]);
   if (guitar) {
-    maxFret = Math.max(3, Math.min(24, Math.floor(pNum(p, "maxFret", 5))));
+    maxFret = Math.max(3, askedFret);
     pos = pick(rng, fretCandidates(pList(p, "strings", ALL_STRINGS), pNum(p, "maxFret", 5), pRange(p), accidentals));
     midi = fretMidi(pos);
   } else {
-    const range = pRange(p) ?? (from === "staff" ? (clef === "bass" ? [43, 60] : [60, 79]) : [60, 71]);
-    midi = pick(rng, midiCandidates(range as [number, number], accidentals));
+    midi = pick(rng, midiCandidates(pianoRange as [number, number], accidentals));
   }
   const spelled = isBlackKey(midi) ? spell(rng, midi) : fromMidi(midi);
   const name = pcLabel(spelled);
@@ -51,8 +58,12 @@ export const playNote: Generator = (p, rng) => {
 
   let explain: string;
   if (guitar) {
-    const places = (anyOctave ? positionsOfPc(pc(midi), maxFret) : positionsOf(midi, maxFret)).slice(0, 4).map(posWhere);
-    explain = from === "tab" && pos ? `The tab says ${posWhere(pos)}, which is ${pitchLabel(spelled)}.` : `${anyOctave ? name : pitchLabel(spelled)} is at ${joinAnd(places.length ? places : [posWhere(pos!)])}.`;
+    // Only places the lesson has reached: no fretted note in an open-strings lesson.
+    const places = (anyOctave ? positionsOfPc(pc(midi), askedFret) : positionsOf(midi, askedFret)).slice(0, 4).map(posWhere);
+    const at = `${anyOctave ? name : pitchLabel(spelled)} is at ${joinAnd(places.length ? places : [posWhere(pos!)])}.`;
+    if (from === "tab" && pos) explain = `The tab says ${posWhere(pos)}, which is ${pitchLabel(spelled)}. Tab names the place to play, so the same note on another string does not count.`;
+    else if (from === "staff") explain = `${at} Guitar music is written an octave higher than it sounds, so on the staff this note is drawn as ${pitchLabel({ ...spelled, oct: spelled.oct + 1 })}.`;
+    else explain = at;
   } else if (from === "staff") {
     explain = `That note is ${pitchLabel(spelled)}, ${staffWhere({ ...spelled, acc: 0 }, clef)}${spelled.acc ? ` with a ${spelled.acc > 0 ? "sharp" : "flat"}` : ""}. On the keyboard, ${name} is ${keyWhere(midi)}.`;
   } else {
@@ -61,8 +72,8 @@ export const playNote: Generator = (p, rng) => {
   return {
     prompt,
     stimuli: [stimulus],
-    response: guitar ? { type: "fretboard", maxFret, mode: "single", labels: "none" } : { type: "keyboard", range: kbRange(Math.min(midi, 48), Math.max(midi, 72)), mode: "single", labels: "none" },
-    expected: { type: "notes", midis: [midi], match: anyOctave ? "pc" : "exact", ordered: false },
+    response: guitar ? { type: "fretboard", maxFret, mode: "single", labels: "none" } : { type: "keyboard", range: kbRange(Math.min(pianoRange[0], 48), Math.max(pianoRange[1], 72)), mode: "single", labels: anyOctave ? "none" : "landmarks" },
+    expected: from === "tab" && pos ? { type: "notes", midis: [midi], match: "exact", ordered: false, positions: [pos] } : { type: "notes", midis: [midi], match: anyOctave ? "pc" : "exact", ordered: false },
     explain,
     reveal: melodic([midi], timbre),
   };
@@ -107,26 +118,43 @@ export const playScale: Generator = (p, rng) => {
 
 export const playChord: Generator = (p, rng) => {
   const guitar = isGuitar(p);
-  const c = pick(rng, chordPool(p, false));
+  // `show: diagram` puts the chord box in front of the learner: the task is
+  // reading it onto the neck. Guitar only, and only chords with a stored shape.
+  const showDiagram = guitar && pStr(p, "show", "name") === "diagram";
+  const c = pick(rng, chordPool(p, showDiagram));
   const symbol = chordSymbol(c);
   const stimulus: Stimulus = { type: "text", text: chordLabel(c) };
+  // `ask: symbol` leaves the reading of the symbol to the learner: the prompt
+  // does not say "D minor" beside "Dm".
+  const bySymbol = pStr(p, "ask", "name") === "symbol";
+  if (showDiagram && GUITAR_SHAPES[symbol]) {
+    const shape = GUITAR_SHAPES[symbol];
+    return {
+      prompt: `Copy this ${chordLabel(c)} chord diagram onto the fretboard: mark one note on every string that is played (open strings too), then check.`,
+      stimuli: [stimulus, { type: "diagram", chord: symbol }],
+      response: { type: "fretboard", maxFret: Math.max(5, ...shape.frets.map((f) => f ?? 0)), mode: "set", labels: "none" },
+      expected: { type: "chord-shape", symbol, exact: true },
+      explain: `From string 6 to string 1 the diagram reads ${shape.frets.map((f) => (f === null ? "x" : f)).join(" ")} (x = not played, 0 = open). The left-hand line of the box is string 6, the thickest.`,
+      reveal: arpThenChord(shapeMidis(shape), "guitar", 0.03),
+    };
+  }
   if (guitar) {
     const shape = GUITAR_SHAPES[symbol];
     const midis = shape ? shapeMidis(shape) : pianoVoicing(symbol).map((m) => m - 12);
     const maxFret = Math.max(5, ...(shape ? shape.frets.map((f) => f ?? 0) : [5]));
     const shapeText = shape ? ` A common shape, from string 6 to string 1: ${shape.frets.map((f) => (f === null ? "x" : f)).join(" ")} (x = not played, 0 = open).` : "";
     return {
-      prompt: `Fret ${chordFullName(c)} (${chordLabel(c)}): mark one note on each string you would play, then check.`,
+      prompt: bySymbol ? "Fret this chord: mark one note on each string you would play, then check." : `Fret ${chordFullName(c)} (${chordLabel(c)}): mark one note on each string you would play, then check.`,
       stimuli: [stimulus],
       response: { type: "fretboard", maxFret, mode: "set", labels: "none" },
       expected: { type: "chord-shape", symbol },
-      explain: `${chordFullName(c)} is ${joinAnd(uniq(chordNotes(c).map((n) => pcLabel(n))))}; any shape that sounds only those notes works.${shapeText}`,
+      explain: `${chordFullName(c)} is ${joinAnd(uniq(chordNotes(c).map((n) => pcLabel(n))))}; any shape a hand can reach that sounds only those notes, with ${pcLabel(c.root)} as its lowest note, works.${shapeText}`,
       reveal: arpThenChord(midis, "guitar", 0.03),
     };
   }
   const midis = pianoVoicing(symbol);
   return {
-    prompt: `Press the notes of ${chordFullName(c)} (${chordLabel(c)}), then check.`,
+    prompt: bySymbol ? "Press the notes of this chord, then check." : `Press the notes of ${chordFullName(c)} (${chordLabel(c)}), then check.`,
     stimuli: [stimulus],
     response: { type: "keyboard", range: [48, 72], mode: "set", labels: "none" },
     expected: { type: "notes", midis: chordPcs(c).map((x) => 60 + x), match: "pc", ordered: false },
@@ -135,16 +163,33 @@ export const playChord: Generator = (p, rng) => {
   };
 };
 
-/** About 110 ms either side counts as on time. */
-export const TAP_TOLERANCE_SECONDS = 0.11;
+/** The window of each onset, in beats, in the order given: 110 ms, or less
+ *  when its own nearest neighbour is close. A pair of sixteenths does not
+ *  tighten the half note elsewhere in the pattern. */
+export function tapTolerances(onsets: number[], tempo: number): number[] {
+  const base = (TAP_TOLERANCE_SECONDS * tempo) / 60;
+  return onsets.map((o) => {
+    let gap = Infinity;
+    for (const other of onsets) if (Math.abs(other - o) > 1e-9) gap = Math.min(gap, Math.abs(other - o));
+    return Math.min(base, gap * TAP_TOLERANCE_GAP_SHARE);
+  });
+}
+/** The tightest window in the pattern (one number for the whole of it). */
+export function tapTolerance(onsets: number[], tempo: number): number {
+  return Math.min((TAP_TOLERANCE_SECONDS * tempo) / 60, ...tapTolerances(onsets, tempo));
+}
 
 export const tapRhythm: Generator = (p, rng) => {
   const time = pStr(p, "time", "4/4");
   const bar = barBeatsOf(time);
   const values = durationTokens(pList(p, "values", ["h", "q"]));
   const nBars = Math.max(1, Math.min(2, Math.floor(pNum(p, "bars", 1))));
-  const tempo = Math.max(30, Math.min(240, pNum(p, "tempo", 72)));
-  const bars = Array.from({ length: nBars }, () => fillBar(rng, values, bar));
+  // Never faster than the shortest note can be tapped (the loader refuses
+  // such a declaration; this only keeps a stray one answerable).
+  const shortest = Math.min(...values.map((v) => parseDuration(v).beats));
+  const tempo = Math.max(30, Math.min(240, maxTapTempo(shortest), pNum(p, "tempo", 72)));
+  const syncopation = pBool(p, "syncopation", false);
+  const bars = Array.from({ length: nBars }, () => fillBar(rng, values, time, { syncopation }));
   const tokens = bars.flat();
   const onsets: number[] = [];
   let at = 0;
@@ -153,17 +198,31 @@ export const tapRhythm: Generator = (p, rng) => {
     if (!d.rest) onsets.push(at);
     at += d.beats;
   }
-  let unit8 = false;
+  // Counted as the time signature says, unless a note falls finer than a
+  // quarter of that beat (sixteenths in 2/2): then every word of the count
+  // would be "and", so the bar is counted in beats half as long instead.
+  let countTime = time;
+  let unitBeats = 1;
   try {
-    unit8 = parseTime(time).unit === 8;
+    unitBeats = countUnitBeats(time);
+    const ts = parseTime(time);
+    const fine = onsets.some((o) => {
+      const q = (o / unitBeats) * 4;
+      return Math.abs(q - Math.round(q)) > 1e-9;
+    });
+    if (fine && ts.unit < 8) {
+      countTime = `${ts.beats * 2}/${ts.unit * 2}`;
+      unitBeats = countUnitBeats(countTime);
+    }
   } catch {
     /* default */
   }
+  const recount = countTime !== time ? `Count ${countTime.split("/")[0]} to the bar here, twice as fast as the time signature's beat. ` : "";
   const counted = onsets.map((o) => {
     const inBar = o - Math.floor(o / bar + 1e-9) * bar;
-    const label = countLabel(inBar, time);
+    const label = countLabel(inBar, countTime);
     if (/^\d+$/.test(label) || label === "") return label || "between counts";
-    return `the ${label === "&" ? "“and”" : `“${label}”`} of ${Math.floor((unit8 ? inBar * 2 : inBar) + 1e-9) + 1}`;
+    return `the ${label === "&" ? "“and”" : `“${label}”`} of ${Math.floor(inBar / unitBeats + 1e-9) + 1}`;
   });
   const pattern = bars.map((b) => b.join(" ")).join(" | ");
   const where = Array.from({ length: nBars }, (_, b) => {
@@ -172,11 +231,13 @@ export const tapRhythm: Generator = (p, rng) => {
     return nBars > 1 ? `In bar ${b + 1} the notes start on ${said}.` : `The notes start on ${said}.`;
   }).join(" ");
   return {
-    prompt: `Tap this rhythm on the space bar. You get one bar of clicks to count you in.`,
+    prompt: `Tap this rhythm on the space bar. The clicks count you in first.`,
     stimuli: [{ type: "rhythm", pattern, time }],
-    response: { type: "tap", pattern, time, tempo, countInBeats: bar },
-    expected: { type: "taps", onsets, toleranceBeats: (TAP_TOLERANCE_SECONDS * tempo) / 60 },
-    explain: `${where} Hold each note for its full length; you only tap where a note begins.`,
+    // The click is the beat that is counted aloud: six eighths in 6/8, two
+    // half notes in 2/2.
+    response: { type: "tap", pattern, time, tempo, countInBeats: bar, ...(Math.abs(unitBeats - 1) > 1e-9 ? { clickBeats: unitBeats } : {}) },
+    expected: { type: "taps", onsets, toleranceBeats: tapTolerance(onsets, tempo), tolerances: tapTolerances(onsets, tempo) },
+    explain: `${recount}${where} Hold each note for its full length; you only tap where a note begins.`,
     reveal: rhythmSound(tokens, tempo),
   };
 };

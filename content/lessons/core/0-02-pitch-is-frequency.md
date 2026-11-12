@@ -9,6 +9,7 @@ summary: How high or low a note sounds depends on how many times a second it vib
 exercises:
   - kind: ear-higher-lower
     concept: pitch-frequency
+    vocab: plain
     count: 6
     minSemitones: 3
     maxSemitones: 12
@@ -33,7 +34,7 @@ exercises:
         choices: [How loud a note is, How long a note lasts, How high or low a note sounds]
         answer: 3
         explain: Pitch is the highness or lowness of a note. Loudness and length are separate things.
-      - q: The note musicians tune to, the A above middle C, is usually set to
+      - q: The note that orchestras and bands tune to, called A, is usually set to
         choices: [44 Hz, 440 Hz, 4400 Hz]
         answer: 2
         explain: Concert pitch is A = 440 Hz, that is 440 vibrations per second.
@@ -43,6 +44,7 @@ exercises:
         explain: Hearing runs from about 20 Hz to about 20,000 Hz, and the top of that range drops with age.
   - kind: ear-higher-lower
     concept: pitch-frequency
+    vocab: plain
     title: Smaller differences
     count: 5
     minSemitones: 1

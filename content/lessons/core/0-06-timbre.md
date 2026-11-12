@@ -29,7 +29,7 @@ exercises:
         answer: 2
         explain: Timbre is the colour of a sound, and it comes mainly from which harmonics are strong and which are weak.
       - q: A sound with only a fundamental and no overtones is called
-        choices: [a sine wave, a chord, an octave]
+        choices: [a sine wave, a spectrum, an overtone series]
         answer: 1
         explain: A sine wave is the plainest possible sound, a single frequency. Its spectrum has one bar.
       - q: You add strong high harmonics to a note. It sounds

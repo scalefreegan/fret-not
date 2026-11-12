@@ -66,24 +66,23 @@ Set the metronome above to 3/4 and hear how the strong beat now comes every thre
 
 > Every bar holds exactly the number of beats the time signature says. The notes and rests inside can be any mix, but they must add up.
 
-Here is a tune in 4/4. Count "1 2 3 4" in each bar as it plays.
+Here is a tune in 4/4. Count "1 2 3 4" in each bar as it plays. In the last bar one note has a small **dot** after it, which makes it half as long again: a dotted quarter lasts 1½ beats, and the quick eighth note after it fills the other half. The next lesson covers dots properly. For now, check that the bar still adds up: 1½ + ½ + 2 = 4.
 
 ```widget
 type: melody
 title: Ode to Joy (Beethoven, Symphony No. 9), opening
-notes: "E4:q E4:q F4:q G4:q | G4:q F4:q E4:q D4:q | C4:q C4:q D4:q E4:q | E4:h D4:h"
+notes: "E4:q E4:q F4:q G4:q | G4:q F4:q E4:q D4:q | C4:q C4:q D4:q E4:q | E4:q. D4:e D4:h"
 time: 4/4
 tempo: 100
 ```
 
-And one in 3/4. Count "1 2 3". The tune starts on beat 3, after two beats of rest.
+And one in 3/4. Count "1 2 3". The tune starts on beat 3, after two beats of rest. Its last note is a dotted half: 2 beats plus half as much again, 3 beats, a whole bar of 3/4.
 
 ```widget
 type: melody
 title: Amazing Grace (traditional American hymn tune), opening
 notes: "r:h D4:q | G4:h B4:e G4:e | B4:h A4:q | G4:h E4:q | D4:h."
 time: 3/4
-key: G
 tempo: 84
 ```
 

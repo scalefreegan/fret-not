@@ -10,3 +10,6 @@ web/dist/
 
 # browser-automation debug artifacts
 .playwright-mcp/
+
+# Claude Code local settings
+.claude/

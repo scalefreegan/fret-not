@@ -65,7 +65,6 @@ type: melody
 title: Amazing Grace (traditional American hymn tune), opening
 notes: "r:h D4:q | G4:h B4:e G4:e | B4:h A4:q | G4:h."
 time: 3/4
-key: G
 tempo: 84
 ```
 

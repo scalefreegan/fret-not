@@ -49,12 +49,14 @@ exercises:
     title: Seconds and thirds on the keyboard
     count: 5
     intervals: [M2, M3]
+    labels: numbers
   - kind: name-interval
     concept: interval-numbers
     title: Step or skip?
     count: 5
     view: staff
     intervals: [M2, M3, P5]
+    labels: numbers
 ---
 
 An **interval** is the distance between two notes. Intervals are the real building blocks of music: a melody is a chain of intervals, and a chord is a stack of them.
@@ -75,6 +77,7 @@ Move the upper note in this widget and watch the number change. Try to predict i
 type: interval
 from: C4
 to: E4
+labels: numbers
 ```
 
 The eight basic numbers have names: **unison** (the same note), **second, third, fourth, fifth, sixth, seventh**, and **octave** (eight).
@@ -91,7 +94,7 @@ Because each line and space is one letter, you can read an interval's number str
 - **Third**: line to the next line, or space to the next space.
 - **Fifth**: line to line with one line between, or space to space with one space between.
 
-Click the pairs: a second, a third, then a fifth, all starting on E.
+Press the pairs: a second, a third, then a fifth, all starting on E.
 
 ```widget
 type: staff

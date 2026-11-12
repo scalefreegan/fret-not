@@ -9,6 +9,7 @@ summary: Doubling a frequency gives a note so similar to the first that it gets 
 exercises:
   - kind: ear-same-note
     concept: octave
+    vocab: plain
     count: 6
     timbre: piano
   - kind: quiz

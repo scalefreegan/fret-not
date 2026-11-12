@@ -7,7 +7,9 @@ import { countLabel, parseMelody, parseRhythm, parseTab, parseTime, totalBeats, 
 import { keySignature } from "../../../shared/music/scales.ts";
 import { audioContext, audioNow, playChord, playClick, playSound, startMetronome, type MetronomeHandle, type Playback } from "../../audio/index.ts";
 import { Button, cx, PlayButton, Segmented, Slider, WidgetFrame } from "../../ui.tsx";
+import { tapTolerances } from "../../../shared/exercises/play.ts";
 import { bool, list, num, str } from "../params.ts";
+import { eventAudioTime, useCoarse } from "../touch.ts";
 import type { WidgetProps } from "../types.ts";
 import { ChordView, keyboardRange, LinkedViews, strumMidis, type View } from "./Linked.tsx";
 import { Score, type ScoreClef, type ScoreItem } from "./Score.tsx";
@@ -100,7 +102,7 @@ export function MetronomeWidget({ params }: WidgetProps) {
           </g>
           <circle cx={60} cy={118} r={5} fill="var(--ink)" />
         </svg>
-        <div className="flex gap-2.5" aria-label={`Beat ${beat === null ? "stopped" : beat + 1} of ${ts.beats}`}>
+        <div className="flex flex-wrap justify-center gap-2.5" aria-label={`Beat ${beat === null ? "stopped" : beat + 1} of ${ts.beats}`}>
           {Array.from({ length: ts.beats }, (_, i) => (
             <span key={i} className={cx("flex h-11 w-11 items-center justify-center rounded-full border-2 text-lg font-bold transition-colors duration-75", beat === i ? (i === 0 ? "border-accent bg-accent text-accent-ink" : "border-accent bg-accent-soft text-fg") : "border-line text-fg-3")}>
               {i + 1}
@@ -117,43 +119,59 @@ export function MetronomeWidget({ params }: WidgetProps) {
 const TAP_PITCH = 76;
 
 /** Tap-along: after a count-in, collect taps (space bar or the pad) on the
- *  audio clock and report each as beats from the first written beat. */
+ *  audio clock and report each as beats from the first written beat. It only
+ *  measures: how close a tap must be is the grader's business (the engine's
+ *  `tapTolerances`), never decided here.
+ *
+ *  Pass the DOM event to `tap` (`onPointerDown={tapper.tap}`): the tap is
+ *  timed from the event's own timestamp, the moment the finger or key landed,
+ *  not from whenever the handler got to run. */
 export function useTapSession() {
   const [state, setState] = useState<"idle" | "count-in" | "go" | "done">("idle");
   const [countBeat, setCountBeat] = useState(0);
   const [taps, setTaps] = useState<number[]>([]);
-  const ref = useRef<{ t0: number; spb: number; taps: number[]; timers: number[]; live: boolean; end: number } | null>(null);
+  const ref = useRef<{ t0: number; spb: number; taps: number[]; timers: number[]; clicks: { stop(): void }[]; live: boolean; end: number } | null>(null);
   const cancel = useCallback(() => {
     ref.current?.timers.forEach((t) => window.clearTimeout(t));
-    if (ref.current) ref.current.live = false;
+    // The clicks were put on the audio clock up front: take back the ones
+    // that have not sounded, or they carry on after the page has moved on.
+    ref.current?.clicks.forEach((c) => c.stop());
+    if (ref.current) {
+      ref.current.clicks = [];
+      ref.current.live = false;
+    }
     setState("idle");
   }, []);
-  const tap = useCallback(() => {
+  const tap = useCallback((e?: { timeStamp: number } | null) => {
     const s = ref.current;
     if (!s || !s.live) return;
     const ac = audioContext();
     const latency = (ac.outputLatency || 0) + (ac.baseLatency || 0);
-    const beats = (audioNow() - latency - s.t0) / s.spb;
+    const beats = (eventAudioTime(e, audioNow()) - latency - s.t0) / s.spb;
     if (beats < -0.75 || beats > s.end) return;
     playClick({ accent: true });
     s.taps.push(beats);
     setTaps([...s.taps]);
   }, []);
   const start = useCallback(
-    (tempo: number, countInBeats: number, lengthBeats: number, onDone: (taps: number[]) => void) => {
+    // `clickBeats`: quarter-note beats between clicks (0.5 in 6/8, where the
+    // pulse that is counted is the eighth). The count shown is in clicks.
+    (tempo: number, countInBeats: number, lengthBeats: number, onDone: (taps: number[]) => void, clickBeats = 1) => {
       cancel();
       const spb = 60 / tempo;
       const tStart = audioNow() + 0.15;
       const t0 = tStart + countInBeats * spb;
-      const s = { t0, spb, taps: [] as number[], timers: [] as number[], live: true, end: lengthBeats + 0.4 };
+      const s = { t0, spb, taps: [] as number[], timers: [] as number[], clicks: [] as { stop(): void }[], live: true, end: lengthBeats + 0.4 };
       ref.current = s;
       setTaps([]);
       setState("count-in");
-      const total = countInBeats + Math.ceil(lengthBeats);
+      const step = clickBeats > 0 ? clickBeats : 1;
+      const inClicks = Math.round(countInBeats / step);
+      const total = inClicks + Math.ceil(lengthBeats / step - 1e-9);
       for (let b = 0; b < total; b++) {
-        const delay = 0.15 + b * spb;
-        playClick({ accent: b === 0 || b === countInBeats, delay });
-        s.timers.push(window.setTimeout(() => { setCountBeat(b < countInBeats ? b + 1 : 0); if (b === countInBeats) setState("go"); }, delay * 1000));
+        const delay = 0.15 + b * step * spb;
+        s.clicks.push(playClick({ accent: b === 0 || b === inClicks, delay }));
+        s.timers.push(window.setTimeout(() => { setCountBeat(b < inClicks ? b + 1 : 0); if (b === inClicks) setState("go"); }, delay * 1000));
       }
       s.timers.push(window.setTimeout(() => { s.live = false; setState("done"); onDone([...s.taps]); }, (0.15 + (countInBeats + lengthBeats + 0.4) * spb) * 1000));
     },
@@ -164,13 +182,33 @@ export function useTapSession() {
     const on = (e: KeyboardEvent) => {
       if (e.code !== "Space" || e.repeat) return;
       e.preventDefault();
-      tap();
+      tap(e);
     };
     window.addEventListener("keydown", on);
     return () => window.removeEventListener("keydown", on);
   }, [state, tap]);
   useEffect(() => cancel, [cancel]);
   return { state, countBeat, taps, start, tap, cancel };
+}
+
+/** The pad a rhythm is tapped on: big enough for a thumb, and deaf to
+ *  everything a touch screen does with a repeated tap (zoom, selection, the
+ *  long-press menu). Shows the count-in, then invites the taps. */
+export function TapPad({ state, countBeat, onTap, className }: { state: "idle" | "count-in" | "go" | "done"; countBeat: number; onTap: (e: React.PointerEvent) => void; className?: string }) {
+  const coarse = useCoarse();
+  return (
+    <button
+      type="button"
+      onPointerDown={(e) => {
+        if (e.pointerType === "mouse" && e.button !== 0) return;
+        onTap(e);
+      }}
+      onContextMenu={(e) => e.preventDefault()}
+      className={cx("touch-surface flex min-h-28 w-full items-center justify-center rounded-2xl border-2 px-4 text-xl font-bold transition-colors active:brightness-95", coarse && "min-h-36", state === "go" ? "border-accent bg-accent-soft text-fg" : "border-line bg-raised text-fg-3", className)}
+    >
+      {state === "count-in" ? `Count-in: ${countBeat || "…"}` : coarse ? "Tap here" : "Tap here, or press the space bar"}
+    </button>
+  );
 }
 
 export function rhythmItems(events: TimedEvent[], time: string, withCount: boolean, tones?: (ScoreItem["tone"] | undefined)[]): ScoreItem[] {
@@ -186,7 +224,11 @@ export function RhythmWidget({ params }: WidgetProps) {
   const tapper = useTapSession();
   const [errors, setErrors] = useState<(number | null)[] | null>(null);
   const onsets = events.filter((e) => e.midis.length).map((e) => e.at);
-  const tol = 0.11 / (60 / tempo);
+  // How close counts as "in time" is the engine's rule, per note.
+  const tols = useMemo(() => tapTolerances(onsets, tempo), [events, tempo]); // eslint-disable-line react-hooks/exhaustive-deps
+  const inTime = (err: number | null | undefined, i: number) => err !== null && err !== undefined && Math.abs(err) <= tols[i];
+  const tol = tols.length ? Math.min(...tols) : 0.1;
+  const tapping = tapper.state === "count-in" || tapper.state === "go";
   const sound: Sound = { tempo, events: events.map((e) => ({ midis: e.midis.length ? [TAP_PITCH] : [], at: e.at, beats: Math.min(e.duration.beats, 0.4) })) };
   const begin = () => {
     stop();
@@ -203,8 +245,8 @@ export function RhythmWidget({ params }: WidgetProps) {
     });
   };
   let n = 0;
-  const tones = errors ? events.map((e) => (e.midis.length ? (((x) => (x !== null && x !== undefined && Math.abs(x) <= tol ? "good" : "bad"))(errors[n++]) as ScoreItem["tone"]) : undefined)) : undefined;
-  const hits = errors ? errors.filter((e) => e !== null && Math.abs(e) <= tol).length : 0;
+  const tones = errors ? events.map((e) => (e.midis.length ? ((inTime(errors[n], n++) ? "good" : "bad") as ScoreItem["tone"]) : undefined)) : undefined;
+  const hits = errors ? errors.filter((e, i) => inTime(e, i)).length : 0;
   return (
     <WidgetFrame
       title="Rhythm"
@@ -213,11 +255,12 @@ export function RhythmWidget({ params }: WidgetProps) {
         <>
           <PlayButton playing={playing} onClick={() => (playing ? stop() : play(sound, { timbre: "triangle", click: true }))} label="Play with a click on each beat" />
           <Slider className="min-w-44 flex-1" label="Tempo" value={tempo} min={50} max={160} onChange={setTempo} format={(v) => `${v} bpm`} />
-          {bool(params, "tap", false) && (tapper.state === "idle" || tapper.state === "done" ? <Button size="sm" onClick={begin}>Tap along</Button> : <Button size="sm" variant="primary" onPointerDown={tapper.tap}>{tapper.state === "count-in" ? `Count-in… ${tapper.countBeat}` : "Tap! (or press space)"}</Button>)}
+          {bool(params, "tap", false) && (tapping ? <Button size="sm" onClick={tapper.cancel}>Stop tapping</Button> : <Button size="sm" onClick={begin}>Tap along</Button>)}
         </>
       }
     >
       <Score clef="rhythm" time={time} items={rhythmItems(events, time, bool(params, "count", true), tones)} active={active} space={11} />
+      {tapping && <TapPad className="mt-3" state={tapper.state} countBeat={tapper.countBeat} onTap={tapper.tap} />}
       {errors && (
         <p className="mt-2 text-sm text-fg-2">
           <strong className="text-fg">{hits} of {onsets.length}</strong> notes in time. {errors.some((e) => e === null) ? "Some notes had no tap. " : ""}

@@ -21,10 +21,18 @@ exercises:
     tonics: [A, E, D]
   - kind: play-scale
     concept: pentatonic-scales
-    count: 4
+    title: Play C major pentatonic
+    count: 2
     instrument: piano
-    types: [major-pentatonic, minor-pentatonic]
-    tonics: [C, A]
+    types: [major-pentatonic]
+    tonics: [C]
+  - kind: play-scale
+    concept: pentatonic-scales
+    title: Play A minor pentatonic
+    count: 2
+    instrument: piano
+    types: [minor-pentatonic]
+    tonics: [A]
   - kind: quiz
     concept: pentatonic-scales
     count: 3

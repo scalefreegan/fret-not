@@ -16,7 +16,7 @@ exercises:
         answer: 2
         explain: Amplitude is the size of the swing. Frequency is how often it repeats.
       - q: You pluck a string gently, then pluck the same string hard. What changes?
-        choices: [The amplitude, and so the loudness, The frequency, and so the pitch, Nothing]
+        choices: ["The amplitude, and so the loudness", "The frequency, and so the pitch", Nothing]
         answer: 1
         explain: A harder pluck pulls the string further, so it swings wider and sounds louder. Its pitch stays the same.
       - q: On a waveform, a louder note looks like

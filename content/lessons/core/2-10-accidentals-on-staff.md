@@ -55,7 +55,7 @@ To write a black-key note, you write the letter next to it and add a sign **in f
 
 These signs are called **accidentals**.
 
-Click these three notes. They all sit in the same space, the F space. Only the sign changes.
+Press these four notes. The first two both sit in the F space, and the last two both sit on the G line. Within each pair only the sign changes.
 
 ```widget
 type: staff
@@ -68,7 +68,7 @@ The second and fourth notes are written in different places, an F with a sharp a
 
 > We say "F sharp" but we write "sharp F": the sign comes before the note, so you see it in time.
 
-Try it yourself. Click a black key and see how it is written. Click a white key and see the sign disappear.
+Try it yourself. Press a black key and see how it is written. Press a white key and see the sign disappear.
 
 ```widget
 type: linked

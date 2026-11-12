@@ -5,6 +5,7 @@ import { Button, NoteChip, Slider, WidgetFrame, cx } from "../../ui.tsx";
 import { str } from "../params.ts";
 import type { WidgetProps } from "../types.ts";
 import { fmtHz, useRaf, useReducedMotion, wavePath } from "./common.ts";
+import { usePressWord } from "../touch.ts";
 
 // Cutaway diagrams of how each instrument turns a movement of the hand into
 // sound. Schematic, not to scale: the parts and what each one does.
@@ -54,6 +55,7 @@ const HOLD = 1.7; // seconds the key stays down
 const STRIKE = 0.09; // seconds from key press to the hammer reaching the string
 
 function Piano() {
+  const word = usePressWord();
   const [pressed, setPressed] = useState(false);
   const [t, setT] = useState(0);
   const reduced = useReducedMotion();
@@ -98,7 +100,7 @@ function Piano() {
         </>
       }
     >
-      <div className="overflow-x-auto">
+      <div className="overflow-x-auto [contain:inline-size]">
       <svg viewBox="0 0 640 300" className="block w-full min-w-[520px]" role="img" aria-label="Side view of a piano key, hammer, damper, string, bridge and soundboard">
         {/* soundboard and bridge */}
         <rect x={300} y={118} width={322} height={12} rx={3} fill="var(--rosewood)" stroke="var(--line-strong)" />
@@ -156,7 +158,7 @@ function Piano() {
       </div>
       <div className="mt-3 border-t border-line pt-3">
         <p className="text-sm text-fg-2">
-          <strong className="text-fg">Low strings are long and thick, high strings short and thin.</strong> Click each one to hear it.
+          <strong className="text-fg">Low strings are long and thick, high strings short and thin.</strong> {word.Press} each one to hear it.
         </p>
         <svg viewBox="0 0 640 118" className="mt-1 block w-full" role="group" aria-label="Five piano strings from low to high">
           {P_STRINGS.map((s, i) => {
@@ -195,6 +197,7 @@ const FRACTIONS: Record<number, string> = { 0: "the whole string", 3: "about ⅚
 const INTERVALS: Record<number, string> = { 5: "a perfect fourth higher", 7: "a perfect fifth higher", 12: "an octave higher" };
 
 function Guitar() {
+  const word = usePressWord();
   const [fret, setFret] = useState(0);
   const [plucked, setPlucked] = useState(false);
   const [t, setT] = useState(0);
@@ -222,7 +225,7 @@ function Guitar() {
   return (
     <WidgetFrame
       title="How a guitar makes a note"
-      hint="Click anywhere along the neck to press the A string there and pluck it."
+      hint={`${word.Press} anywhere along the neck to press the A string there and pluck it.`}
       controls={
         <>
           <Button variant="primary" size="sm" onClick={() => pluck(fret)}>
@@ -239,7 +242,7 @@ function Guitar() {
         </>
       }
     >
-      <div className="overflow-x-auto">
+      <div className="overflow-x-auto [contain:inline-size]">
       <svg viewBox="0 0 640 330" className="block w-full min-w-[520px] select-none" role="img" aria-label={`Guitar seen from the front, A string pressed at ${fret === 0 ? "no fret" : `fret ${fret}`}`}>
         {/* body */}
         <path d="M352,96 C352,70 372,62 400,64 C430,66 440,80 462,80 C490,80 500,40 548,40 C600,40 632,90 632,148.5 C632,207 600,257 548,257 C500,257 490,217 462,217 C440,217 430,231 400,233 C372,235 352,227 352,201 Z" fill="var(--string-wound)" opacity={0.55} stroke="var(--rosewood)" strokeWidth={3} />

@@ -10,12 +10,14 @@ summary: Moving one fret along a string moves one half step, so two frets make a
 exercises:
   - kind: name-interval
     concept: frets-half-steps
+    vocab: letters
     count: 6
     view: fretboard
     intervals: [m2, M2]
     labels: steps
   - kind: build-interval
     concept: frets-half-steps
+    vocab: letters
     count: 6
     intervals: [m2, M2]
     direction: both
@@ -50,7 +52,7 @@ exercises:
         answer: 3
         explain: Twelve half steps make an octave. The 12th fret is also the midpoint of the string.
       - q: Open string 6 is E. On that string, E to F and F to G are how many frets?
-        choices: [One fret, then two frets, Two frets, then two frets, One fret, then one fret]
+        choices: ["One fret, then two frets", "Two frets, then two frets", "One fret, then one fret"]
         answer: 1
         explain: E to F is a half step (one fret). F to G is a whole step (two frets).
 ---
@@ -91,7 +93,7 @@ A, B, C, D, E, F, G, A. B and C are neighbours (frets 2 and 3) and so are E and 
 
 ## Compare with the keyboard
 
-Click along one string below and watch the keyboard. One fret always moves to the very next key, whether that key is black or white.
+Press along one string below and watch the keyboard. One fret always moves to the very next key, whether that key is black or white.
 
 ```widget
 type: linked

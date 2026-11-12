@@ -45,7 +45,7 @@ Written music uses a ladder of five horizontal lines called the **staff**. Notes
 
 The rule is simple: **the higher a note sits on the staff, the higher it sounds.**
 
-Click each note from left to right and listen to it climb.
+Press each note from left to right and listen to it climb.
 
 ```widget
 type: staff

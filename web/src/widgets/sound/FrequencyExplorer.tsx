@@ -29,6 +29,9 @@ export function FrequencyExplorer({ params }: WidgetProps) {
   const near = nearestNote(hz);
   const p = fromMidi(near.midi);
   const cycles = (hz * WINDOW_MS) / 1000;
+  // Enough points per wave that the drawing never aliases into a false,
+  // slower wave: at very high frequencies it honestly fills in to a band.
+  const wavePoints = Math.min(12000, Math.max(900, Math.ceil(cycles * 24)));
 
   const play = () => {
     if (held.playing) return held.stop();
@@ -82,7 +85,7 @@ export function FrequencyExplorer({ params }: WidgetProps) {
         <div>
         <svg viewBox="0 0 640 190" className="block w-full" role="img" aria-label={`A wave of ${Math.round(hz)} hertz over ${WINDOW_MS} thousandths of a second`}>
           <line x1={0} x2={640} y1={95} y2={95} stroke="var(--line)" strokeDasharray="3 5" />
-          <path d={wavePath((x) => level * Math.sin(2 * Math.PI * cycles * x), 640, 190, 80, 900)} fill="none" stroke="var(--ink)" strokeWidth={2.4} strokeLinejoin="round" />
+          <path d={wavePath((x) => level * Math.sin(2 * Math.PI * cycles * x), 640, 190, 80, wavePoints)} fill="none" stroke="var(--ink)" strokeWidth={2.4} strokeLinejoin="round" />
           <line x1={2} x2={638} y1={182} y2={182} stroke="var(--fg-3)" />
           <line x1={2} x2={2} y1={177} y2={187} stroke="var(--fg-3)" />
           <line x1={638} x2={638} y1={177} y2={187} stroke="var(--fg-3)" />
