@@ -1,5 +1,7 @@
 # Fret Not
 
+![Fret Not demo](docs/demo.gif)
+
 A personal, highly visual app for learning how music works: sound and
 harmonics, notes, rhythm, reading notation, intervals, scales and chords, with
 every idea shown, heard and drilled on the piano and the guitar.
