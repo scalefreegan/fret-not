@@ -585,7 +585,12 @@ export async function commitWorkspace(ws: Workspace, reply: string): Promise<Com
   }
 }
 
-export type Applied = { applied: true } | { applied: false; cancelled: true } | { applied: false; cancelled?: false; ref: string; reason: string };
+/** Where a commit that was not applied stands. `kept`: under its name, the
+ *  working tree untouched. `staged`: under its name, but (some of) its files
+ *  are already in content/ and the index. `unnamed`: git could not give it a
+ *  name, so `ref` is the bare hash and only git's object store holds it. */
+export type HeldState = "kept" | "staged" | "unnamed";
+export type Applied = { applied: true } | { applied: false; cancelled: true } | { applied: false; cancelled?: false; ref: string; reason: string; state: HeldState };
 
 /**
  * Bring the turn's commit into the real repository — only if that is a plain
@@ -618,9 +623,13 @@ export async function applyCommit(ws: Workspace, hash: string, { cancelled = () 
   try {
     await git(ws.root, ["update-ref", ref, hash, ""]);
   } catch (e) {
-    return { applied: false, ref: hash, reason: `git could not record the commit (${gitError(e)})` };
+    return { applied: false, ref: hash, reason: `git could not record the commit (${gitError(e)})`, state: "unnamed" };
   }
-  const kept = (reason: string): Applied => ({ applied: false, ref, reason });
+  const kept = (reason: string, state: HeldState = "kept"): Applied => ({ applied: false, ref, reason, state });
+  // After a write that failed or could not be undone: did anything land in
+  // content/? It was clean before the write (checked above), so any change
+  // there is the tutor's.
+  const landedIn = async (): Promise<HeldState> => ((await dirtyReason(ws.root, ws.spec).catch(() => "unknown")) ? "staged" : "kept");
   const short = (r: string) => r.replace(/^refs\/heads\//, "");
   const onBranch = async (): Promise<string> => {
     try {
@@ -647,7 +656,7 @@ export async function applyCommit(ws: Workspace, hash: string, { cancelled = () 
     try {
       await git(ws.root, ["read-tree", "-m", "-u", ws.base, hash], { detached: true });
     } catch (e) {
-      return kept(`git would not write the files (${gitError(e)})`);
+      return kept(`git would not write the files (${gitError(e)})`, await landedIn());
     }
     let moved = "";
     try {
@@ -660,7 +669,7 @@ export async function applyCommit(ws: Workspace, hash: string, { cancelled = () 
       try {
         await git(ws.root, ["read-tree", "-m", "-u", hash, ws.base], { detached: true });
       } catch (e) {
-        return kept(`${moved}; the tutor's files had already been written and could not be taken out again (${gitError(e)}), so they are in ${ws.spec}/ and staged but not committed`);
+        return kept(`${moved}, and the files it had already written could not be taken out again (${gitError(e)})`, await landedIn());
       }
       return kept(moved);
     }
@@ -676,9 +685,18 @@ export async function applyCommit(ws: Workspace, hash: string, { cancelled = () 
 }
 
 /** What the learner is told when the commit exists but was not applied. */
-export function heldNote(ws: Pick<Workspace, "branch" | "spec">, hash: string, summary: string, held: { ref: string; reason: string }): string {
+export function heldNote(ws: Pick<Workspace, "branch" | "spec">, hash: string, summary: string, held: { ref: string; reason: string; state?: HeldState }): string {
   const branch = ws.branch.replace(/^refs\/heads\//, "");
-  return `The tutor's change ("${summary}") passed the checks but was NOT put into your files, because ${held.reason}. Nothing in your working tree was touched. The change is kept as commit ${hash.slice(0, 10)} under the name ${held.ref}. To take it: with ${ws.spec}/ committed or stashed and ${branch} checked out, run \`git merge --ff-only ${held.ref}\` (or \`git cherry-pick ${held.ref}\` if ${branch} has moved on). To drop it: \`git update-ref -d ${held.ref}\`.`;
+  const what = `The tutor's change ("${summary}") passed the checks but was NOT ${held.state === "staged" ? "committed to your branch" : "put into your files"}, because ${held.reason}.`;
+  if (held.state === "unnamed")
+    return `${what} Nothing in your working tree was touched, and git could not keep the change under a name either: it exists only as the unnamed commit ${hash}, which git will eventually clean up. To keep it, run \`git update-ref refs/tutor/kept-${hash.slice(0, 10)} ${hash}\` soon; otherwise just ask the tutor again.`;
+  if (held.state === "staged") return `${what} ${stagedAdvice(held.ref, hash, ws.spec)}`;
+  return `${what} Nothing in your working tree was touched. The change is kept as commit ${hash.slice(0, 10)} under the name ${held.ref}. To take it: with ${ws.spec}/ committed or stashed and ${branch} checked out, run \`git merge --ff-only ${held.ref}\` (or \`git cherry-pick ${held.ref}\` if ${branch} has moved on). To drop it: \`git update-ref -d ${held.ref}\`.`;
+}
+
+/** The files are (partly) in content/ and the index but the branch did not move. */
+function stagedAdvice(ref: string, hash: string, spec: string): string {
+  return `Its files were already (at least partly) written into ${spec}/ and staged, but the branch has not moved. The change is kept as commit ${hash.slice(0, 10)} under the name ${ref}. To finish: \`git merge --ff-only ${ref}\`. To back out: \`git restore --staged --worktree ${spec}\` and \`git clean -f ${spec}\` (look at \`git status\` first), then \`git update-ref -d ${ref}\`.`;
 }
 
 /** A tutor commit that is still waiting under a name. */
@@ -739,6 +757,6 @@ export async function heldRefs(root: string = gitRoot(), spec = "content"): Prom
  *  (the server stopped before it could say). */
 export function foundHeldNote(h: Held, spec = "content"): string {
   const what = `An earlier tutor change ("${h.summary}") is kept as commit ${h.hash.slice(0, 10)} under the name ${h.ref}; the app stopped before it could say so.`;
-  if (h.staged) return `${what} The app stopped half-way through putting it into your files: they are already in ${spec}/ and staged, but the branch has not moved. To finish: \`git merge --ff-only ${h.ref}\`. To back out: \`git restore --staged --worktree ${spec}\` and \`git clean -f ${spec}\` (look at \`git status\` first), then \`git update-ref -d ${h.ref}\`.`;
+  if (h.staged) return `${what} The app stopped half-way through putting it into your files. ${stagedAdvice(h.ref, h.hash, spec)}`;
   return `${what} Nothing in your working tree was touched. To take it: with ${spec}/ committed or stashed, run \`git merge --ff-only ${h.ref}\` (or \`git cherry-pick ${h.ref}\`). To drop it: \`git update-ref -d ${h.ref}\`.`;
 }

@@ -217,6 +217,20 @@ test("what the learner is told about a read-only turn and a commit that was kept
   assert.match(held, /`git merge --ff-only refs\/tutor\/17-ab`/);
   assert.match(held, /`git cherry-pick refs\/tutor\/17-ab`/);
   assert.match(held, /`git update-ref -d refs\/tutor\/17-ab`/);
+
+  // Files already written and the undo failed: no "nothing was touched", and a way back out.
+  const staged = heldNote({ branch: "refs/heads/main", spec: "content" }, "0123456789abcdef0123", "added lesson x", { ref: "refs/tutor/17-ab", reason: "main moved at the last moment", state: "staged" });
+  assert.doesNotMatch(staged, /Nothing in your working tree was touched/);
+  assert.match(staged, /NOT committed to your branch/);
+  assert.match(staged, /written into content\/ and staged/);
+  assert.match(staged, /`git restore --staged --worktree content`/);
+  assert.match(staged, /`git update-ref -d refs\/tutor\/17-ab`/);
+
+  // No name could be given: the full hash, honestly unnamed, and how to keep it.
+  const unnamed = heldNote({ branch: "refs/heads/main", spec: "content" }, "0123456789abcdef0123", "added lesson x", { ref: "0123456789abcdef0123", reason: "git could not record the commit (disk full)", state: "unnamed" });
+  assert.match(unnamed, /unnamed commit 0123456789abcdef0123/);
+  assert.match(unnamed, /`git update-ref refs\/tutor\/kept-0123456789 0123456789abcdef0123`/);
+  assert.doesNotMatch(unnamed, /under the name|update-ref -d/);
 });
 
 test("the replayed history is bounded by count and by bytes", () => {
