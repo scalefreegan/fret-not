@@ -143,7 +143,9 @@ export function contentGrants(contentDir = contentRoot(), repoRoot = REPO_ROOT) 
 export function contentDenials(contentDir = contentRoot(), repoRoot = REPO_ROOT) {
   const grants = contentGrants(contentDir, repoRoot); // validates the directory
   const base = grants[0].slice("Edit(".length, -"/**)".length);
-  return ["Edit", "Write"].flatMap((tool) => [`${tool}(${base}/.git/**)`, `${tool}(${base}/**/.git/**)`]);
+  // Both a `.git` directory's contents and a FILE named `.git` (a gitlink,
+  // which points git at a directory of the writer's choosing).
+  return ["Edit", "Write"].flatMap((tool) => [`${tool}(${base}/.git)`, `${tool}(${base}/**/.git)`, `${tool}(${base}/.git/**)`, `${tool}(${base}/**/.git/**)`]);
 }
 
 /**
@@ -365,6 +367,34 @@ function armReaper() {
   }
 }
 
+/** The prefix of the per-run temp directory (the empty MCP config and the
+ *  prompt file). */
+const RUN_DIR_PREFIX = "fret-not-mcp-";
+
+/**
+ * Delete per-run temp directories a killed server left behind: directories
+ * in the system temp folder with this app's prefix, not touched for
+ * `maxAgeMs` (longer than any run; a run that outlives it has long since
+ * opened what it needs from there). They hold the chat transcript. Never
+ * throws; returns how many were removed.
+ */
+export function sweepPromptDirs({ maxAgeMs = 45 * 60_000, now = Date.now(), tmp = os.tmpdir() } = {}) {
+  let removed = 0;
+  try {
+    for (const name of fs.readdirSync(tmp)) {
+      if (!name.startsWith(RUN_DIR_PREFIX)) continue;
+      const dir = path.join(tmp, name);
+      try {
+        const st = fs.lstatSync(dir);
+        if (!st.isDirectory() || now - st.mtimeMs < maxAgeMs) continue;
+        fs.rmSync(dir, { recursive: true, force: true });
+        removed++;
+      } catch { /* gone already, or not ours to read */ }
+    }
+  } catch { /* no temp folder to read */ }
+  return removed;
+}
+
 /**
  * Start a headless agent run. Returns { result, kill, pid } — `result`
  * resolves to
@@ -385,7 +415,7 @@ export function startClaude({ prompt, systemPrompt, model, cwd = REPO_ROOT, sign
   console.log(`[fret-not] claude: spawning ${chosen} (${tools === "none" ? "no tools" : tools === "read" ? "read-only tools" : "content tools"}, max ${maxTurns} turns, ${timeoutSec}s timeout)`);
 
   // An EMPTY MCP config under --strict-mcp-config: see buildArgs.
-  let mcpDir = fs.mkdtempSync(path.join(os.tmpdir(), "fret-not-mcp-"));
+  let mcpDir = fs.mkdtempSync(path.join(os.tmpdir(), RUN_DIR_PREFIX));
   const mcpConfigPath = path.join(mcpDir, "mcp.json");
   fs.writeFileSync(mcpConfigPath, JSON.stringify({ mcpServers: {} }), { mode: 0o600 });
   const cleanupMcp = () => {

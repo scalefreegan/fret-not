@@ -22,6 +22,15 @@
   font-display: block;
 }
 
+/* ♭ ♮ ♯ in running text. Neither text face has them, and the browser's own
+   fallback picks a symbol font whose flat is narrow with wide bearings ("B ♭").
+   Name faces whose signs sit like letters, for these three characters only. */
+@font-face {
+  font-family: "Music Signs";
+  src: local("Arial Unicode MS"), local("ArialUnicodeMS"), local("Segoe UI Symbol"), local("DejaVu Sans"), local("Noto Sans Symbols2"), local("Noto Sans Symbols 2");
+  unicode-range: U+266D-266F;
+}
+
 :root {
   color-scheme: light dark;
   --ground: #f4eee2;
@@ -31,13 +40,13 @@
   --line-strong: #b9ac93;
   --fg: #211c15;
   --fg-2: #4a4234;
-  --fg-3: #7a6f5c;
-  --accent: #c2410c;
+  --fg-3: #6b6150;
+  --accent: #b53b0a;
   --accent-hover: #a8370a;
   --accent-edge: #7c2a08;
   --accent-ink: #ffffff;
   --accent-soft: #fbe6d8;
-  --good: #2f7d4f;
+  --good: #27704a;
   --good-soft: #dcf0e2;
   --bad: #b3261e;
   --bad-soft: #fbe3e0;
@@ -54,8 +63,8 @@
   --ebony: #24201b;
   --ebony-top: #3a342c;
   /* Lettering printed on the keys (they stay ivory and ebony in both schemes). */
-  --ivory-ink: #8a7f6c;
-  --ivory-ink-soft: #a59a86;
+  --ivory-ink: #6f6554;
+  --ivory-ink-soft: #756b59;
   --ebony-ink: #d8cfbd;
   --rosewood: #5a3626;
   --rosewood-dark: #3f2519;
@@ -93,7 +102,7 @@
     --line-strong: #564b39;
     --fg: #f3ecdd;
     --fg-2: #cfc5b0;
-    --fg-3: #978c77;
+    --fg-3: #a59a84;
     --accent: #f0703a;
     --accent-hover: #f58854;
     --accent-edge: #a84418;
@@ -111,8 +120,8 @@
     --ivory-edge: #8f8672;
     --ebony: #100e0b;
     --ebony-top: #2b2620;
-    --ivory-ink: #776d5b;
-    --ivory-ink-soft: #8f8572;
+    --ivory-ink: #655c4c;
+    --ivory-ink-soft: #6b6251;
     --ebony-ink: #cfc6b3;
     --rosewood: #4a2c1f;
     --rosewood-dark: #2f1b12;
@@ -146,8 +155,8 @@
   --color-warn: var(--warn);
   --color-warn-soft: var(--warn-soft);
   --color-ink: var(--ink);
-  --font-display: "Fraunces", ui-serif, Georgia, serif;
-  --font-sans: "Figtree", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Fraunces", "Music Signs", ui-serif, Georgia, serif;
+  --font-sans: "Figtree", "Music Signs", ui-sans-serif, system-ui, sans-serif;
   --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
 }
 

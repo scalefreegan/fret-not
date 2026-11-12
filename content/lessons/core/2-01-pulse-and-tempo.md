@@ -85,4 +85,4 @@ notes: "C4:q C4:q G4:q G4:q | A4:q A4:q G4:h | F4:q F4:q E4:q E4:q | D4:q D4:q C
 tempo: 132
 ```
 
-In the exercises you will tap a steady beat on the space bar. Listen to the count-in first, then keep the same spacing.
+In the exercises you will tap a steady beat: on the space bar, or on the tap pad if you are on a touch screen. Listen to the count-in first, then keep the same spacing.

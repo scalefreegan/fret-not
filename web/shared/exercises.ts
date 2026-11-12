@@ -168,7 +168,7 @@ export function grade(question: Question, given: Given): Grade {
     case "chord-shape": {
       if (given.type !== "notes" || !given.positions || given.positions.length === 0) return { correct: false };
       try {
-        return { correct: positionsSpellChord(given.positions, want.symbol) };
+        return { correct: positionsSpellChord(given.positions, want.symbol, want.exact === true) };
       } catch {
         return { correct: false };
       }

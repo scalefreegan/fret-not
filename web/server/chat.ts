@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { AGENT_MODELS, failureHint, onFatalSignal, startClaude } from "../../scripts/claude.mjs";
+import { AGENT_MODELS, failureHint, onFatalSignal, startClaude, sweepPromptDirs } from "../../scripts/claude.mjs";
 import type { Content, ContentProblem } from "../shared/content.ts";
 import type {
   ChatCommit, ChatDone, ChatError, ChatFixing, ChatHeartbeat, ChatHistoryReply, ChatMessage, ChatNote, ChatProblems, ChatReply, ChatRequest, ChatStart,
@@ -8,7 +8,7 @@ import type {
 import { REPO_ROOT, contentDir, loadContent } from "./loader.ts";
 import { HttpError, methodNotAllowed, openSse, readJsonBody, sendJson, subPath } from "./sse.ts";
 import { appendHistory, clearHistory, getModel, readHistory, setModel } from "./store.ts";
-import { applyCommit, changedPaths, closeWorkspace, commitWorkspace, gitRoot, heldNote, openWorkspace, readOnlyNote, strayWrites, sweepWorkspaces, writable, type NotReady, type Workspace } from "./turn.ts";
+import { applyCommit, changedPaths, closeWorkspace, commitWorkspace, foundHeldNote, gitRoot, heldNote, heldRefs, openWorkspace, readOnlyNote, strayWrites, sweepWorkspaces, writable, type NotReady, type Workspace } from "./turn.ts";
 
 // The Tutor: a headless `claude -p` (scripts/claude.mjs), one turn per request.
 //
@@ -36,8 +36,10 @@ import { applyCommit, changedPaths, closeWorkspace, commitWorkspace, gitRoot, he
 //     the branch is fast-forwarded to that commit; if the fast-forward is
 //     not possible any more, the commit is kept under refs/tutor/<id> and
 //     the learner is told how to take it. If it is not clean, or the run
-//     died, timed out or was cancelled, the worktree is deleted. In every
-//     case there is nothing to undo, because nothing was written here.
+//     died, timed out or was cancelled (the connection closing at any point
+//     before the files are written into the repository counts), the worktree
+//     is deleted. In every case there is nothing to undo, because nothing
+//     was written here.
 //   - anything else (uncommitted work in content/, a detached HEAD, no
 //     commits, a rebase in progress…) → the turn runs in the repository with
 //     Read/Glob/Grep only, and a note says why it cannot write.
@@ -332,16 +334,31 @@ function armShutdownCleanup(): void {
 }
 
 /**
- * Clear away worktrees an earlier server process left behind (old ones only:
- * see STALE_MS in turn.ts). Called when the server starts (api.ts) and before
- * every turn. Never throws; there is nothing to put back, because a turn
- * never writes into the repository until it is finished and valid.
+ * Clear away worktrees an earlier turn or server process left behind (see
+ * sweepWorkspaces in turn.ts for which), and old prompt temp directories.
+ * Called when the server starts (api.ts — also when Vite restarts it inside
+ * the same process, so the turn in flight is kept). Never throws; there is
+ * nothing to put back, because a turn never writes into the repository until
+ * it is finished and valid.
  */
 export function recoverInterruptedTurn(maxAgeMs?: number): { removed: number } {
-  return { removed: sweepWorkspaces(maxAgeMs === undefined ? {} : { maxAgeMs }) };
+  sweepPromptDirs();
+  const keep = tutor.running ? (tutor.workspace?.dir ?? null) : null;
+  return { removed: sweepWorkspaces(maxAgeMs === undefined ? { keep } : { maxAgeMs, keep }) };
 }
 
 async function handleChatPost(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  // Cancellation is listened for from the first moment — before the body is
+  // read, the repository checked or the worktree made — so a Stop pressed in
+  // the first second is not missed. It listens on `res`, not `req`:
+  // readJsonBody consumes the request body, which destroys the
+  // IncomingMessage, and a `close` listener on that never fires.
+  const ctrl = new AbortController();
+  const onClose = () => ctrl.abort();
+  res.on("close", onClose);
+  /** The learner pressed Stop, or the page is gone. Also true when the
+   *  connection closed before the listener above could hear it. */
+  const gone = (): boolean => ctrl.signal.aborted || res.destroyed || Boolean(req.socket?.destroyed);
   const body = await readJsonBody<Partial<ChatRequest>>(req);
   const message = typeof body?.message === "string" ? body.message.trim() : "";
   if (!message) throw new HttpError(400, "message is required");
@@ -355,8 +372,6 @@ async function handleChatPost(req: IncomingMessage, res: ServerResponse): Promis
   tutor.workspace = null;
 
   const now = () => new Date().toISOString();
-  const ctrl = new AbortController();
-  const onClose = () => ctrl.abort();
   let heartbeat: ReturnType<typeof setInterval> | null = null;
   let ws: Workspace | null = null;
   // Everything from here on is inside the try, so nothing — not even opening
@@ -365,6 +380,7 @@ async function handleChatPost(req: IncomingMessage, res: ServerResponse): Promis
     const dir = contentDir();
     const root = gitRoot();
     sweepWorkspaces({ root });
+    sweepPromptDirs();
 
     // May this turn write? If so it gets a worktree of its own; if not (or
     // the worktree cannot be made) it runs read-only, and says why.
@@ -381,10 +397,6 @@ async function handleChatPost(req: IncomingMessage, res: ServerResponse): Promis
     }
 
     const send = openSse(res);
-    // Cancellation listens on `res`, not `req`: readJsonBody consumed the
-    // request body, which destroys the IncomingMessage — a `close` listener on
-    // it never fires, so a req-based kill would leak the process group.
-    res.on("close", onClose);
     const startedAt = Date.now();
     heartbeat = setInterval(() => {
       send("heartbeat", { elapsed: Math.round((Date.now() - startedAt) / 1000) } satisfies ChatHeartbeat);
@@ -415,8 +427,18 @@ async function handleChatPost(req: IncomingMessage, res: ServerResponse): Promis
         const text = readOnlyNote(readOnly);
         if (!history.slice(-READ_ONLY_NOTE_EVERY).some((m) => m.role === "note" && m.text === text)) tell(text);
       }
+      // A tutor commit an earlier server kept under a name (or applied) but
+      // stopped before recording: said now, once, so no kept commit is ever
+      // one the owner was not told about.
+      const spec = ready.ok ? ready.spec : "content";
+      const found = await heldRefs(root, spec);
+      const said = (h: { ref: string; hash: string }) => history.some((m) => (m.role === "note" && m.text.includes(h.ref)) || (m.role === "commit" && m.text.startsWith(h.hash.slice(0, 7))));
+      for (const h of found.landed) if (!said(h)) appendHistory({ role: "commit", text: `${h.hash.slice(0, 7)}: ${h.summary}`, ts: now() });
+      for (const h of found.held) if (!said(h)) tell(foundHeldNote(h, spec));
 
       const turn = async (prompt: string): Promise<ChatMessage> => {
+        // Stopped before the agent was even started: do not start it.
+        if (gone()) throw new Error("cancelled");
         tutor.phase = "agent";
         const { result } = startClaude(
           ws
@@ -448,9 +470,8 @@ async function handleChatPost(req: IncomingMessage, res: ServerResponse): Promis
           broken = await verdict(ws);
         }
         // Stop pressed (or the page gone) after the agent's last call but
-        // before the commit is still a stop: the page has already told the
-        // learner nothing will be committed, so make that true.
-        if (ctrl.signal.aborted) throw new Error("cancelled");
+        // before the commit is still a stop: nothing is committed.
+        if (gone()) throw new Error("cancelled");
 
         if (broken.length) {
           const note: ChatMessage = { role: "note", text: remainingNote(broken), ts: now() };
@@ -463,11 +484,13 @@ async function handleChatPost(req: IncomingMessage, res: ServerResponse): Promis
             tell(`The tutor's change passed the checks but could not be committed (${made.error}), so it was thrown away. It was written in a separate copy: your curriculum was not touched. Ask again once that is sorted out.`);
             commit = { error: made.error };
           } else if ("hash" in made) {
-            const landed = await applyCommit(ws, made.hash);
+            // Asked again inside, immediately before the files are written.
+            const landed = await applyCommit(ws, made.hash, { cancelled: gone });
+            if (!landed.applied && landed.cancelled) throw new Error("cancelled");
             if (landed.applied) {
               commit = { hash: made.hash.slice(0, 7), summary: made.summary };
               appendHistory({ role: "commit", text: `${commit.hash}: ${commit.summary}`, ts: now() });
-            } else {
+            } else if (!landed.cancelled) {
               console.warn(`[fret-not] tutor: commit ${made.hash} kept as ${landed.ref}, not applied: ${landed.reason}`);
               tell(heldNote(ws, made.hash, made.summary, landed));
             }

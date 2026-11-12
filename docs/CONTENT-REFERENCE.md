@@ -127,7 +127,7 @@ Two notes and the distance between them: its name, its size in half steps, its f
 | `to` **(required)** | `pitch` | Upper note. |
 | `interactive` | `boolean` | Let the learner move the upper note. Default true. |
 | `views` | `enum[]:staff \| keyboard \| fretboard \| tab` | Default [staff, keyboard]. |
-| `labels` | `enum:names \| numbers` | `numbers` shows only the interval's number ("Third", "Fifth"), with no quality, half-step count or ratio: for lessons before qualities are taught. Default names. |
+| `labels` | `enum:names \| numbers \| steps` | `numbers` shows only the interval's number ("Third", "Fifth"), with no quality, half-step count or ratio: for lessons before qualities are taught. `steps` shows only the distance in half steps and whole steps, with no interval name, number or ratio: for lessons before intervals are named. Default names. |
 
 ### `scale`
 
@@ -277,6 +277,7 @@ A chord is shown; name it (root and quality).
 | `types` | `chordtype[]` | e.g. [maj, min]. |
 | `roots` | `pitchclass[]` | e.g. [C, F, G]. |
 | `qualityOnly` | `boolean` | Ask only major or minor (etc.), not the root. Default false. |
+| `answers` | `enum:names \| symbols` | How the answers are written: `names` ("D minor") or `symbols` ("Dm"), for the lesson that teaches chord symbols. Default names. |
 
 #### `name-key`
 
@@ -304,7 +305,8 @@ A bar with one note missing is shown; choose the note value that completes it.
 | Parameter | Type | |
 |---|---|---|
 | `time` | `time` | Default 4/4. |
-| `values` **(required)** | `duration[]` | Note values used. |
+| `values` **(required)** | `duration[]` | Note values used. They must be able to fill one bar of `time` with at least two notes or rests. |
+| `syncopation` | `boolean` | Allow notes longer than an eighth to start off the beat. Default false: every note starts on a beat or on a clean division of it, as in the lessons before syncopation is taught. |
 
 #### `harmonic-frequency`
 
@@ -372,8 +374,9 @@ A one-bar rhythm plays; pick the notation that matches it from three.
 | Parameter | Type | |
 |---|---|---|
 | `time` | `time` | Default 4/4. |
-| `values` **(required)** | `duration[]` | Note values used. |
+| `values` **(required)** | `duration[]` | Note values used. They must be able to fill one bar of `time`. |
 | `tempo` | `number` | Default 80. (30 to 240) |
+| `syncopation` | `boolean` | Allow notes longer than an eighth to start off the beat. Default false: every note starts on a beat or on a clean division of it, as in the lessons before syncopation is taught. |
 
 #### `ear-find-note`
 
@@ -415,24 +418,26 @@ Play a scale upward from its tonic, one octave, in order.
 
 #### `play-chord`
 
-A chord symbol is shown (with `show: diagram`, its chord box too); press its notes (piano) or fret its shape (guitar), then check.
+A chord symbol is shown (with `show: diagram`, its chord box too); press its notes (piano) or fret its shape (guitar), then check. On the guitar any shape a hand can reach counts if it sounds only the chord's notes with the root lowest.
 
 | Parameter | Type | |
 |---|---|---|
 | `instrument` **(required)** | `enum:piano \| guitar` | Which instrument answers. |
 | `chords` **(required)** | `chord[]` | Chords drawn from. |
-| `show` | `enum:name \| diagram` | `diagram` also shows the guitar chord box, so the task is copying it onto the neck (guitar only; every chord needs a stored shape). Default name. |
+| `show` | `enum:name \| diagram` | `diagram` also shows the guitar chord box, so the task is copying it onto the neck exactly: every string it plays, none it mutes (guitar only; every chord needs a stored shape). Default name. |
+| `ask` | `enum:name \| symbol` | `symbol` shows only the chord symbol and does not spell it out in words ("Dm", not "D minor (Dm)"), for the lesson that teaches reading symbols. Default name. |
 
 #### `tap-rhythm`
 
-A one- or two-bar rhythm is shown; after a count-in, tap it on the space bar in time.
+A one- or two-bar rhythm is shown; after a count-in, tap it in time (space bar, or the tap pad on a touch screen).
 
 | Parameter | Type | |
 |---|---|---|
 | `time` | `time` | Default 4/4. |
-| `values` **(required)** | `duration[]` | Note values used. |
+| `values` **(required)** | `duration[]` | Note values used. They must be able to fill one bar of `time`. |
 | `bars` | `number` | 1 or 2. Default 1. (whole number, 1 to 2) |
-| `tempo` | `number` | Default 72. (30 to 240) |
+| `tempo` | `number` | Default 72. Not so fast that the shortest of `values` cannot be tapped: at most 84 with sixteenths, 168 with eighths. (30 to 240) |
+| `syncopation` | `boolean` | Allow notes longer than an eighth to start off the beat. Default false: every note starts on a beat or on a clean division of it, as in the lessons before syncopation is taught. |
 
 ### Build
 

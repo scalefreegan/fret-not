@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { buildArgs, childEnv, classifyExit, contentDenials, contentGrants, DEFAULT_MODEL, DENIED, reapOnSignal, REPO_ROOT, resultEnvelope, startClaude, toolWrites, TOOLS } from "../claude.mjs";
+import { buildArgs, childEnv, classifyExit, contentDenials, contentGrants, DEFAULT_MODEL, DENIED, reapOnSignal, REPO_ROOT, resultEnvelope, startClaude, sweepPromptDirs, toolWrites, TOOLS } from "../claude.mjs";
 
 /** The values following every occurrence of a flag, up to the next `--flag`. */
 function valuesOf(args, flag) {
@@ -77,7 +77,8 @@ test("argv: tools, grants, denials, permissions, model, output format", () => {
   // Denials: the named dangerous tools, as a second layer behind --tools.
   const denied = valuesOf(args, "--disallowedTools");
   const base = `//${content.slice(1)}`;
-  const gitRules = [`Edit(${base}/.git/**)`, `Edit(${base}/**/.git/**)`, `Write(${base}/.git/**)`, `Write(${base}/**/.git/**)`];
+  // A `.git` directory's contents, and a file named `.git` (a gitlink).
+  const gitRules = ["Edit", "Write"].flatMap((t) => [`${t}(${base}/.git)`, `${t}(${base}/**/.git)`, `${t}(${base}/.git/**)`, `${t}(${base}/**/.git/**)`]);
   assert.deepEqual(contentDenials(), gitRules);
   // …followed by the paths inside the grant that stay closed: no nested
   // repository under content/.
@@ -273,4 +274,19 @@ test("a fatal signal kills live agents and exits only after a grace period", asy
   assert.equal(timer.hasRef(), false, "the fallback timer does not keep the process alive");
   await new Promise((r) => setTimeout(r, 80));
   assert.deepEqual(exits, [143]);
+});
+
+test("old per-run temp directories are swept by name and age; nothing else is touched", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "fret-not-sweep-"));
+  try {
+    const old = path.join(tmp, "fret-not-mcp-old"), fresh = path.join(tmp, "fret-not-mcp-fresh"), other = path.join(tmp, "someone-elses");
+    for (const d of [old, fresh, other]) { fs.mkdirSync(d); fs.writeFileSync(path.join(d, "prompt.txt"), "the transcript"); }
+    fs.writeFileSync(path.join(tmp, "fret-not-mcp-a-file"), "not a directory");
+    const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60_000);
+    for (const d of [old, other, path.join(tmp, "fret-not-mcp-a-file")]) fs.utimesSync(d, twoHoursAgo, twoHoursAgo);
+    assert.equal(sweepPromptDirs({ tmp }), 1);
+    assert.deepEqual(fs.readdirSync(tmp).sort(), ["fret-not-mcp-a-file", "fret-not-mcp-fresh", "someone-elses"]);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
 });

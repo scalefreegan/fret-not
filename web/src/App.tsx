@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { Answered } from "./exercises/Runner.tsx";
 import { ErrorBoundary } from "./ErrorBoundary.tsx";
 import { Gallery } from "./pages/Gallery.tsx";
@@ -11,8 +11,8 @@ import { href, useRoute } from "./router.ts";
 import { useAppData } from "./app-data.ts";
 import { AppDataProvider } from "./state.tsx";
 import { TutorDrawer, type TutorContext } from "./tutor/index.tsx";
-import { cx, UnsavedBanner } from "./ui.tsx";
-import { dueConcepts, reviewableConcepts } from "../shared/progress.ts";
+import { Button, Card, cx, UnsavedBanner } from "./ui.tsx";
+import { dueConcepts, levelStatuses, reviewableConcepts } from "../shared/progress.ts";
 
 function Logo() {
   return (
@@ -23,9 +23,50 @@ function Logo() {
   );
 }
 
+/** "Saving…" in the header once a save has been in flight for a moment, so
+ *  a slow connection is not silent. A quick save never shows it. */
+function SavingPill({ saving }: { saving: boolean }) {
+  const [slow, setSlow] = useState(false);
+  useEffect(() => {
+    if (!saving) return setSlow(false);
+    const t = window.setTimeout(() => setSlow(true), 700);
+    return () => window.clearTimeout(t);
+  }, [saving]);
+  return (
+    <span role="status" className="shrink-0 text-sm font-medium text-fg-3">
+      {slow && (
+        <span className="inline-flex items-center gap-1.5">
+          <span className="inline-block size-2 animate-pulse rounded-full bg-accent" />
+          Saving…
+        </span>
+      )}
+    </span>
+  );
+}
+
+/** A lesson of a level that is not open yet, reached by its address. */
+function LockedLesson({ title, level, onOpen }: { title: string; level: number; onOpen: () => void }) {
+  return (
+    <div className="mx-auto max-w-3xl px-4 pt-6 pb-24 sm:px-5 sm:pt-8">
+      <Card className="px-4 py-5 sm:px-6 sm:py-6">
+        <p className="text-sm font-bold tracking-wide text-fg-3 uppercase">Level {level} · locked</p>
+        <h1 className="mt-1 text-3xl leading-tight font-bold text-fg">{title}</h1>
+        <p className="mt-2 text-lg text-fg-2">This lesson belongs to a level that is not open yet. It opens when enough of the level before it is mastered (the path says how much is left), or at once if the placement check shows you already know that material.</p>
+        <div className="mt-5 flex flex-wrap gap-3">
+          <a href={href("placement")} className="inline-flex min-h-11 items-center rounded-lg border border-accent-edge bg-accent px-4 font-display font-semibold text-accent-ink hover:bg-accent-hover">Take the placement check</a>
+          <a href={href("home")} className="inline-flex min-h-11 items-center rounded-lg border border-line bg-raised px-4 font-display font-semibold text-fg hover:border-line-strong">Back to the path</a>
+          <Button variant="ghost" onClick={onOpen}>Read it anyway</Button>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
 function Shell() {
   const route = useRoute();
-  const { content, progress, error, recovered, recoveredTo, reloadContent, saver } = useAppData();
+  const { content, progress, progressLoaded, error, recovered, recoveredTo, reloadContent, saver } = useAppData();
+  /** Locked lessons the learner chose to open anyway, for this visit. */
+  const [peeked, setPeeked] = useState<string[]>([]);
   const [recent, setRecent] = useState<NonNullable<TutorContext["recent"]>>([]);
   const onAnswer = useCallback((a: Answered) => setRecent((r) => [...r, { prompt: a.question.prompt, concept: a.question.concept, correct: a.correct, explain: a.question.explain }].slice(-10)), []);
   const lesson = route.name === "lesson" ? content?.lessons.find((l) => l.id === route.arg) : undefined;
@@ -45,9 +86,13 @@ function Shell() {
   const activeTab = route.name === "lesson" || route.name === "placement" ? "home" : route.name;
   let page;
   if (!content) page = <p className="p-6 text-fg-3 sm:p-10">{error ?? "Loading…"}</p>;
+  else if (route.name === "lesson" && lesson && !progressLoaded) page = <p className="p-6 text-fg-3 sm:p-10">Loading…</p>;
+  else if (route.name === "lesson" && lesson && !peeked.includes(lesson.id) && !progress.lessons[lesson.id] && levelStatuses(content, progress).find((s) => s.level === lesson.level)?.unlocked === false) page = <LockedLesson title={lesson.title} level={lesson.level} onOpen={() => setPeeked((p) => [...p, lesson.id])} />;
   else if (route.name === "lesson") page = lesson ? <LessonPage key={lesson.id} lesson={lesson} onAnswer={onAnswer} /> : <p className="p-6 text-fg-2 sm:p-10">There is no lesson called “{route.arg}”. <a className="underline" href={href("home")}>Back to the path</a></p>;
   else if (route.name === "review") page = <ReviewPage onAnswer={onAnswer} />;
-  else if (route.name === "placement") page = <PlacementPage />;
+  // The placement check asks about the tracks the learner follows, which it
+  // reads from saved progress when it starts: not from the empty placeholder.
+  else if (route.name === "placement") page = progressLoaded ? <PlacementPage /> : <p className="p-6 text-fg-3 sm:p-10">Loading…</p>;
   else if (route.name === "lab") page = <LabPage tool={route.arg} />;
   else if (route.name === "sketchpad") page = <SketchpadPage />;
   else page = <HomePage />;
@@ -81,6 +126,7 @@ function Shell() {
             <nav className="hidden min-w-0 gap-1 sm:flex" aria-label="Sections">
               {tabs.map((t) => tabLink(t, false))}
             </nav>
+            <SavingPill saving={saver.status === "saving"} />
           </div>
         </header>
         <main className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain" id="main-scroll">

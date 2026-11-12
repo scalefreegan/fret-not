@@ -97,7 +97,7 @@ Because the pentatonic has no half steps, almost any path through the box sounds
 ```widget
 type: tab
 title: A blues-style phrase written for this lesson
-notes: "1/0:q 2/3:e 2/0:e 3/2:q 3/0:q | 3/2:e 2/0:e 2/3:q 1/0:h | 1/3:q 1/0:e 2/3:e 2/0:q 3/2:q | 3/0:e 4/2:e 4/0:h."
+notes: "1/0:q 2/3:e 2/0:e 3/2:q 3/0:q | 3/2:e 2/0:e 2/3:q 1/0:h | 1/3:q 1/0:e 2/3:e 2/0:q 3/2:q | 3/0:e 4/0:e 4/2:h."
 tempo: 84
 ```
 

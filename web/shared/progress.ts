@@ -54,6 +54,12 @@ export const UNLOCK_FRACTION = 0.7;
  *  (longer than the box's usual gap: the learner has just shown they know it). */
 const PLACEMENT_BOX = 2;
 const PLACEMENT_DUE_DAYS = 7;
+/** Tested-out concepts fall due over this many days, not all on one. */
+const PLACEMENT_SPREAD_DAYS = 7;
+/** A lesson counts as done once a run of its exercises scores this much.
+ *  Below it the lesson has been attempted: it is offered again by Continue
+ *  and is not ticked off. */
+export const LESSON_DONE_SCORE = 0.6;
 
 export interface AnswerResult {
   concept: string;
@@ -159,6 +165,16 @@ export function recordLesson(progress: Progress, lessonId: string, score: number
   return { ...progress, lessons: { ...progress.lessons, [lessonId]: entry }, updatedAt: now.toISOString() };
 }
 
+/** Done = finished with at least LESSON_DONE_SCORE in some run. */
+export function isLessonDone(lp: LessonProgress | undefined): boolean {
+  return !!lp && lp.bestScore >= LESSON_DONE_SCORE - 1e-9;
+}
+/** "new": never finished; "attempted": finished, but below LESSON_DONE_SCORE
+ *  every time; "done". */
+export function lessonState(lp: LessonProgress | undefined): "new" | "attempted" | "done" {
+  return !lp ? "new" : isLessonDone(lp) ? "done" : "attempted";
+}
+
 /** Mastered = in spaced review (which a concept enters on reaching
  *  MASTERY_THRESHOLD with MIN_ATTEMPTS answers, or by placement). Once there
  *  it stays mastered: a bad review shortens its interval. (What keeps a level
@@ -252,6 +268,46 @@ function gateOf(level: number, testable: Concept[], progress: Progress, optional
 
 type GateContent = Pick<Content, "levels" | "concepts" | "lessons"> & Partial<Pick<Content, "tracks">>;
 
+const optionalTrack = (content: GateContent): ((track: string) => boolean) => {
+  const instrumentTracks = content.tracks ? new Set(content.tracks.filter((t) => t.instrument).map((t) => t.id)) : null;
+  return (track) => (instrumentTracks ? instrumentTracks.has(track) : track !== "core");
+};
+
+/** The instrument tracks this learner has actually worked in: a lesson
+ *  finished or attempted there, or a concept of that track answered. */
+export function followedTracks(content: GateContent, progress: Progress): Set<string> {
+  const optional = optionalTrack(content);
+  const out = new Set<string>();
+  for (const l of content.lessons) if (optional(l.track) && own(progress.lessons, l.id)) out.add(l.track);
+  for (const c of content.concepts) if (optional(c.track) && (own(progress.concepts, c.id)?.attempts ?? 0) > 0) out.add(c.track);
+  return out;
+}
+/** The tracks a placement check asks about and credits: the core, plus the
+ *  instruments the learner follows. Someone who has touched no instrument is
+ *  placed on the core alone, which is all the level gate asks of them. */
+export function placementTracks(content: GateContent, progress: Progress): Set<string> {
+  const optional = optionalTrack(content);
+  const followed = followedTracks(content, progress);
+  return new Set([...content.concepts.map((c) => c.track), ...content.lessons.map((l) => l.track)].filter((t) => !optional(t) || followed.has(t)));
+}
+/** The concepts a placement check for `level` draws its questions from: the
+ *  level's reviewable concepts in placementTracks, so a piano-only learner is
+ *  never failed on guitar questions. In curriculum order; with `seed`, in an
+ *  order shuffled by it. */
+export function placementConcepts(content: GateContent, progress: Progress, level: number, seed?: number): string[] {
+  const tracks = placementTracks(content, progress);
+  const reviewable = reviewableConcepts(content);
+  const ids = content.concepts.filter((c) => c.level === level && tracks.has(c.track) && reviewable.has(c.id)).map((c) => c.id);
+  if (seed === undefined) return ids;
+  let a = (Math.floor(seed) ^ 0x9e3779b9) >>> 0;
+  for (let i = ids.length - 1; i > 0; i--) {
+    a = (Math.imul(a, 1664525) + 1013904223) >>> 0;
+    const j = a % (i + 1);
+    [ids[i], ids[j]] = [ids[j], ids[i]];
+  }
+  return ids;
+}
+
 /** One entry per level in content.levels. Outline levels are never unlocked.
  *  The first written level is always unlocked. A later level n is unlocked
  *  when any of these holds:
@@ -271,8 +327,7 @@ export function levelStatuses(content: GateContent, progress: Progress): LevelSt
   const levels = [...content.levels].sort((a, b) => a.id - b.id);
   const out: LevelStatus[] = [];
   const reviewable = reviewableConcepts(content);
-  const instrumentTracks = content.tracks ? new Set(content.tracks.filter((t) => t.instrument).map((t) => t.id)) : null;
-  const optional = (track: string) => (instrumentTracks ? instrumentTracks.has(track) : track !== "core");
+  const optional = optionalTrack(content);
   const opened = Math.max(progress.placedLevel, progress.openedLevel ?? 0);
   const gates: Gate[] = [];
   let first = true;
@@ -293,7 +348,7 @@ export function levelStatuses(content: GateContent, progress: Progress): LevelSt
       unlocked,
       mastered: concepts.filter((c) => isMastered(own(progress.concepts, c.id))).length,
       total: concepts.length,
-      lessonsDone: lessons.filter((l) => own(progress.lessons, l.id)).length,
+      lessonsDone: lessons.filter((l) => isLessonDone(own(progress.lessons, l.id))).length,
       lessonsTotal: lessons.length,
       gate: gate ? gate.level : null,
       gateMastered: gate ? gate.mastered : 0,
@@ -316,24 +371,36 @@ export function rememberOpened(content: GateContent, progress: Progress): Progre
   return highest === (progress.openedLevel ?? 0) && progress.openedLevel !== undefined ? progress : { ...progress, openedLevel: highest };
 }
 
-/** The first lesson not yet completed in an unlocked level, in path order;
- *  null when everything available is done. */
+/** The lesson "Continue" offers: the first lesson not yet done (isLessonDone)
+ *  in an unlocked level, in path order — looking first at the core and the
+ *  instrument tracks the learner follows (followedTracks), so a pianist is not
+ *  sent to the guitar's level 0 while core lessons wait in level 1. Someone
+ *  who has not started an instrument is offered every track, and when the
+ *  followed tracks are finished the others are offered. Null when everything
+ *  available is done. */
 export function nextLesson(content: GateContent, progress: Progress): Lesson | null {
   const unlocked = new Set(levelStatuses(content, progress).filter((s) => s.unlocked).map((s) => s.level));
-  return content.lessons.find((l) => unlocked.has(l.level) && !own(progress.lessons, l.id)) ?? null;
+  const open = content.lessons.filter((l) => unlocked.has(l.level) && !isLessonDone(own(progress.lessons, l.id)));
+  const followed = followedTracks(content, progress);
+  const optional = optionalTrack(content);
+  const mine = followed.size ? open.filter((l) => !optional(l.track) || followed.has(l.track)) : open;
+  return mine[0] ?? open[0] ?? null;
 }
 
 /** Placement: the learner tested out of every level below `level`. Marks
- *  those levels' concepts mastered (in review, due in a week, so they still
- *  come round) and leaves their lessons untouched. Never lowers a concept
+ *  those levels' concepts mastered (in review, first due in a week and spread
+ *  over the week after, so they still come round but not all on one day) and
+ *  leaves their lessons untouched. Pass only the concepts the check stood for
+ *  (placementTracks): a pianist is not credited with the guitar's. Never lowers a concept
  *  already further along, and never lowers placedLevel. */
 export function applyPlacement(progress: Progress, level: number, concepts: Concept[], now: Date): Progress {
   const next = { ...progress.concepts };
+  let n = 0;
   for (const c of concepts) {
     if (c.level >= level || !storable(c.id)) continue;
     const prev = own(next, c.id) ?? blankConcept();
     if (prev.box >= PLACEMENT_BOX) continue;
-    next[c.id] = { ...prev, recent: [...prev.recent], mastery: Math.max(prev.mastery, 1), box: PLACEMENT_BOX, dueAt: addDays(now, PLACEMENT_DUE_DAYS) };
+    next[c.id] = { ...prev, recent: [...prev.recent], mastery: Math.max(prev.mastery, 1), box: PLACEMENT_BOX, dueAt: addDays(now, PLACEMENT_DUE_DAYS + (n++ % PLACEMENT_SPREAD_DAYS)) };
   }
   return { ...progress, concepts: next, placedLevel: Math.max(progress.placedLevel, level), updatedAt: now.toISOString() };
 }

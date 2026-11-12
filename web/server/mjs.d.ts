@@ -26,6 +26,8 @@ declare module "*/scripts/claude.mjs" {
    *  killed; returns a function that removes it. */
   export function onFatalSignal(hook: () => void): () => void;
   export function sleepSync(ms: number): void;
+  /** Delete old per-run temp directories (prompt + MCP config); returns how many. */
+  export function sweepPromptDirs(opts?: { maxAgeMs?: number; now?: number; tmp?: string }): number;
   /** What a fatal signal does: kill live agents, run the hooks, arrange the exit. */
   export function reapOnSignal(code: number, opts?: { exit?: (code: number) => void; graceMs?: number }): ReturnType<typeof setTimeout>;
   /** Spawns `claude -p` in the sandbox buildArgs() pins (see the test).

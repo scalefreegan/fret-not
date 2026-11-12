@@ -1,5 +1,5 @@
 import type { Choice, Stimulus } from "../exercise-types.ts";
-import { CHORDS, CHORD_ORDER, chordFullName, chordNotes, chordPcs, chordSymbol, parseChord, type ChordRef } from "../music/chords.ts";
+import { CHORDS, CHORD_ORDER, chordFullName, chordLabel, chordNotes, chordPcs, chordSymbol, parseChord, type ChordRef } from "../music/chords.ts";
 import { fretMidi, GUITAR_FRETS, GUITAR_SHAPES, pianoVoicing, shapeMidis } from "../music/instruments.ts";
 import { intervalFormalName, intervalName, intervalNumberName, isInterval, parseInterval, semitones, SIMPLE_INTERVALS, transpose } from "../music/intervals.ts";
 import { LETTERS, accSymbol, diatonicIndex, fromMidi, isBlackKey, letterAt, isPitchClass, parsePitchClass, pc, pcBothLabels, pcLabel, pcName, pcNameOf, pcOfClass, pitchLabel, pitchName, toMidi, type Pitch } from "../music/notes.ts";
@@ -7,8 +7,8 @@ import { parseDuration, parseTime } from "../music/rhythm.ts";
 import { keyOfSignature, keySignature, parseKey, scaleNotes } from "../music/scales.ts";
 import type { Clef } from "../music/staff.ts";
 import {
-  ALL_STRINGS, arpThenChord, barBeatsOf, beatsLabel, cap, choice, durationTokens, durationWords, fillBar, fretCandidates, int, intervalLabel, joinAnd, kbRange, keyWhere, melodic, midiCandidates,
-  ordinal, pBool, pList, pNum, pRange, pStr, pick, plural, posWhere, sayNote, shuffle, sound, ev, staffWhere, aStep, uniq, vocabOf, window5, type Body, type Generator, type Params, type Rng, type Vocab,
+  ALL_STRINGS, arpThenChord, barBeatsOf, beatsLabel, cap, choice, durationTokens, durationWords, fillBar, fretCandidates, int, intervalLabel, isWhiteKeyRespelled, joinAnd, kbRange, keyWhere, melodic, midiCandidates,
+  ordinal, pBool, pList, pNum, pRange, pStr, pick, plural, posWhere, sayNote, shuffle, sound, ev, spellPair, staffWhere, aStep, uniq, vocabOf, window5, type Body, type Generator, type Params, type Rng, type Vocab,
 } from "./util.ts";
 
 const clefOf = (p: Params): Clef => (pStr(p, "clef", "treble") === "bass" ? "bass" : "treble");
@@ -16,13 +16,9 @@ const DEFAULT_STAFF_RANGE: Record<Clef, [number, number]> = { treble: [60, 81], 
 
 /** Every spelling a staff note-naming question can offer: each letter as a
  *  natural, a sharp and a flat, in letter order. */
+// (E♯, B♯, F♭ and C♭ are left out: see isWhiteKeyRespelled.)
 const SPELLED = LETTERS.flatMap((letter) => [-1, 0, 1].map((acc) => ({ letter, acc }))).filter((s) => !isWhiteKeyRespelled(s.letter, s.acc));
 
-/** E♯, B♯, F♭ and C♭ are white keys under another name: real, but not
- *  beginner reading material, so note-naming leaves them out. */
-function isWhiteKeyRespelled(letter: string, acc: number): boolean {
-  return (acc === 1 && (letter === "E" || letter === "B")) || (acc === -1 && (letter === "F" || letter === "C"));
-}
 
 /** Spelled pitches inside a MIDI range: naturals, plus single sharps and
  *  flats when `accidentals`. Never empty. */
@@ -212,12 +208,12 @@ function nameIntervalNumber(p: Params, rng: Rng, view: string): Body {
 /** A natural lower note and a correctly spelled upper note `iv` above it. */
 export function spelledInterval(rng: Rng, iv: string, lo: number, hi: number): [Pitch, Pitch] {
   const roots = staffCandidates([lo, Math.max(lo, hi - semitones(iv))], false);
-  for (let i = 0; i < 20; i++) {
-    const root = pick(rng, roots);
-    const top = transpose(root, iv);
-    if (Math.abs(top.acc) <= 1) return [root, top];
-  }
-  const root = roots[0];
+  // Prefer an upper note with at most one sharp or flat that is not a white
+  // key under another name (B up an augmented fourth is E♯: asked only when
+  // no root in range avoids it).
+  const plain = roots.filter((r) => Math.abs(transpose(r, iv).acc) <= 1);
+  const best = plain.filter((r) => !isWhiteKeyRespelled(transpose(r, iv).letter, transpose(r, iv).acc));
+  const root = pick(rng, best.length ? best : plain.length ? plain : roots);
   return [root, transpose(root, iv)];
 }
 function lettersBetween(a: Pitch, b: Pitch): string {
@@ -270,8 +266,7 @@ export const nameInterval: Generator = (p, rng) => {
     let loP = fromMidi(lo);
     let hiP = fromMidi(lo + span);
     if (labels !== "steps") {
-      const fit = [fromMidi(lo, "sharp"), fromMidi(lo, "flat")].map((r) => [r, transpose(r, iv)] as const).sort((a, b) => Math.abs(a[1].acc) - Math.abs(b[1].acc))[0];
-      [loP, hiP] = fit;
+      [loP, hiP] = spellPair(lo, iv);
     }
     const vocab = vocabOf(p);
     const size = labels === "steps" ? aStep(semis) : `${article(intervalName(iv))} ${intervalName(iv)}`;
@@ -363,7 +358,13 @@ export const nameChord: Generator = (p, rng) => {
     // very keys is as right as the one asked (the keys of C6 are A minor
     // seventh): it is not offered as a wrong answer.
     const twin = (t: string) => t !== c.type && view === "keyboard" && Array.from({ length: 12 }, (_, r) => r).some((r) => keySet({ root: parsePitchClass(pcNameOf(r)), type: t }) === keySet(c));
-    const ordered = CHORD_ORDER.filter((t) => types.includes(t) && !twin(t));
+    let ordered = CHORD_ORDER.filter((t) => types.includes(t) && !twin(t));
+    // Every other declared quality may be such a twin (sus2 and sus4 share
+    // their keys): a question still needs a wrong answer to choose from.
+    for (const t of [...(TRIAD_FLIP[c.type] ?? []), "maj", "min", "dim", "aug"]) {
+      if (ordered.length >= 2) break;
+      if (!ordered.includes(t) && !twin(t)) ordered = CHORD_ORDER.filter((x) => ordered.includes(x) || x === t);
+    }
     choices = window5(rng, ordered, ordered.indexOf(c.type)).map((t) => choice(t, cap(CHORDS[t].name)));
     id = c.type;
   } else {
@@ -378,15 +379,18 @@ export const nameChord: Generator = (p, rng) => {
       const alt = { root: c.root, type: t };
       if (look(alt) !== look(c) && !picked.some((x) => look(x) === look(alt))) picked.push(alt);
     }
-    choices = shuffle(rng, [c, ...picked]).map((x) => choice(chordSymbol(x), chordFullName(x)));
+    // `answers: symbols` offers "Dm", not "D minor": for the lesson that
+    // teaches reading and writing chord symbols.
+    const bySymbol = pStr(p, "answers", "names") === "symbols";
+    choices = shuffle(rng, [c, ...picked]).map((x) => choice(chordSymbol(x), bySymbol ? chordLabel(x) : chordFullName(x)));
     id = symbol;
   }
   return {
-    prompt: pBool(p, "qualityOnly", false) ? "What kind of chord is this?" : "Name this chord.",
+    prompt: pBool(p, "qualityOnly", false) ? "What kind of chord is this?" : pStr(p, "answers", "names") === "symbols" ? "Which chord symbol stands for this chord?" : "Name this chord.",
     stimuli: [stimulus],
     response: { type: "choice", choices },
     expected: { type: "choice", id },
-    explain: chordWhy(c),
+    explain: pStr(p, "answers", "names") === "symbols" && !pBool(p, "qualityOnly", false) ? `${chordWhy(c)} Its symbol is ${chordLabel(c)}.` : chordWhy(c),
     reveal: view === "diagram" ? arpThenChord(midis, "guitar", 0.03) : arpThenChord(midis),
   };
 };
@@ -427,7 +431,9 @@ export const nameKey: Generator = (p, rng) => {
     stimuli: [{ type: "staff", clef: clefOf(p), notes: [], key }],
     response: { type: "choice", choices },
     expected: { type: "choice", id: key },
-    explain: `${cap(sigWords(count))}${count ? ` (${sigList(key)})` : ""} is the key signature of ${keyWords(key)} (and of ${keyWords(relative)}, its relative ${other}).`,
+    // The relative key is named only where the declaration asks about minor
+    // keys: a major-only lesson comes before relative minors are taught.
+    explain: `${cap(sigWords(count))}${count ? ` (${sigList(key)})` : ""} is the key signature of ${keyWords(key)}${pStr(p, "mode", "major") === "major" ? "" : ` (and of ${keyWords(relative)}, its relative ${other})`}.`,
     reveal: melodic(scaleNotes({ ...parseKey(key).tonic, oct: 4 }, mode === "minor" ? "natural-minor" : "major", true).map(toMidi), undefined, 0.5),
   };
 };
@@ -478,7 +484,7 @@ export const countBar: Generator = (p, rng) => {
   const time = pStr(p, "time", "4/4");
   const bar = barBeatsOf(time);
   const values = durationTokens(pList(p, "values", ["h", "q", "e"]));
-  const tokens = fillBar(rng, values, bar, 2);
+  const tokens = fillBar(rng, values, time, { minEvents: 2, syncopation: pBool(p, "syncopation", false) });
   const i = int(rng, 0, tokens.length - 1);
   const missing = tokens[i];
   const d = parseDuration(missing);

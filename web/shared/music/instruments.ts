@@ -108,7 +108,7 @@ export const GUITAR_SHAPES: Record<string, ChordShape> = {
   Cmaj7: { frets: [null, 3, 2, 0, 0, 0], fingers: [0, 3, 2, 0, 0, 0] },
   Fmaj7: { frets: [null, null, 3, 2, 1, 0], fingers: [0, 0, 3, 2, 1, 0] },
   Gmaj7: { frets: [3, 2, 0, 0, 0, 2], fingers: [3, 2, 0, 0, 0, 1] },
-  Dsus4: { frets: [null, null, 0, 2, 3, 3], fingers: [0, 0, 0, 1, 2, 3] },
+  Dsus4: { frets: [null, null, 0, 2, 3, 3], fingers: [0, 0, 0, 1, 3, 4] },
   Asus4: { frets: [null, 0, 2, 2, 3, 0], fingers: [0, 0, 1, 2, 3, 0] },
   E5: { frets: [0, 2, 2, null, null, null], fingers: [0, 1, 2, 0, 0, 0] },
   A5: { frets: [null, 0, 2, 2, null, null], fingers: [0, 0, 1, 2, 0, 0] },
@@ -128,22 +128,43 @@ export function shapeMidis(shape: ChordShape, tuning: readonly number[] = STANDA
   return shapePositions(shape).map((p) => fretMidi(p, tuning));
 }
 
-/** True when a set of fretboard positions spells a chord: one note per string
- *  at most, no note from outside the chord, and nothing missing — except that
- *  a seventh chord may leave out its fifth, as common guitar shapes do (open
- *  C7 has no G). */
-export function positionsSpellChord(positions: FretPos[], symbol: string): boolean {
+/** The widest stretch between fretted notes a chord answer may have: four
+ *  frets (first to fourth finger), so highest fret − lowest fret ≤ 3. Open
+ *  strings do not count: they need no finger. */
+export const MAX_CHORD_FRET_SPAN = 3;
+
+/** True when a set of fretboard positions is a playable way to sound a chord:
+ *  one note per string at most, no note from outside the chord, nothing
+ *  missing (except that a seventh chord may leave out its fifth, as common
+ *  guitar shapes do: open C7 has no G), the chord's root as the lowest note
+ *  (E under an open C chord makes it C/E, which is why the diagram mutes
+ *  string 6), and the fretted notes within one hand's reach.
+ *
+ *  With `exact`, the positions must be the stored shape itself, string for
+ *  string: every string the diagram plays, at its fret, and no string it
+ *  mutes. False when the chord has no stored shape. */
+export function positionsSpellChord(positions: FretPos[], symbol: string, exact = false): boolean {
+  const strings = new Set(positions.map((p) => p.string));
+  if (positions.length === 0 || strings.size !== positions.length) return false;
+  if (exact) {
+    const shape = GUITAR_SHAPES[symbol];
+    if (!shape) return false;
+    const want = shapePositions(shape);
+    return want.length === positions.length && want.every((w) => positions.some((p) => p.string === w.string && p.fret === w.fret));
+  }
   const pcs = chordPcs(parseChord(symbol));
   const want = new Set(pcs);
   const got = new Set(positions.map((p) => pc(fretMidi(p))));
-  const strings = new Set(positions.map((p) => p.string));
-  if (strings.size !== positions.length) return false;
   if (![...got].every((x) => want.has(x))) return false;
   const missing = [...want].filter((x) => !got.has(x));
   // Only a seventh chord with a perfect fifth may drop it. A sixth chord
   // without its fifth is another chord (C–E–A is A minor).
   const mayDropFifth = ["7", "maj7", "m7"].includes(parseChord(symbol).type);
-  return missing.length === 0 || (mayDropFifth && missing.length === 1 && missing[0] === pcs[2]);
+  if (!(missing.length === 0 || (mayDropFifth && missing.length === 1 && missing[0] === pcs[2]))) return false;
+  const lowest = positions.reduce((a, b) => (fretMidi(b) < fretMidi(a) ? b : a));
+  if (pc(fretMidi(lowest)) !== pcs[0]) return false;
+  const fretted = positions.filter((p) => p.fret > 0).map((p) => p.fret);
+  return fretted.length === 0 || Math.max(...fretted) - Math.min(...fretted) <= MAX_CHORD_FRET_SPAN;
 }
 
 // --- piano ----------------------------------------------------------------

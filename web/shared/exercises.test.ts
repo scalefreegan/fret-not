@@ -4,10 +4,10 @@ import type { ExerciseDecl } from "./content.ts";
 import type { Given, Question, Sound, Stimulus } from "./exercise-types.ts";
 import { GENERATED_KINDS, generateQuestions, grade, makeRng, reviewQuestions } from "./exercises.ts";
 import { chordPcs, parseChord } from "./music/chords.ts";
-import { fretMidi, GUITAR_SHAPES, positionsOf, positionsSpellChord, shapePositions } from "./music/instruments.ts";
+import { fretMidi, GUITAR_SHAPES, positionsOf, positionsSpellChord, shapePositions, type FretPos } from "./music/instruments.ts";
 import { intervalBetween, intervalName, intervalText, semitones } from "./music/intervals.ts";
 import { isBlackKey, midiName, midiOf, parsePitch, pc } from "./music/notes.ts";
-import { parseRhythm, parseTime, totalBeats } from "./music/rhythm.ts";
+import { canFillBar, isTime, MIN_TAP_WINDOW_SECONDS, parseDuration, parseRhythm, parseTime, tapWindowSeconds, totalBeats } from "./music/rhythm.ts";
 import { keySignature, scaleNotes } from "./music/scales.ts";
 import { checkParams, EXERCISES, WIDGETS } from "./registry.ts";
 
@@ -900,9 +900,12 @@ test("tap-rhythm: each note's window depends on its own neighbours, and grading 
   const old: Question = { ...q, expected: { type: "taps", onsets: [0, 1], toleranceBeats: 0.2 } };
   assert.equal(grade(old, { type: "taps", onsets: [0.19, 1.19] }).correct, true);
   assert.equal(grade(old, { type: "taps", onsets: [0.21, 1] }).correct, false);
-  for (const tempo of [60, 72, 120, 200]) {
-    for (const g of many("tap-rhythm", { values: ["s", "e", "q", "h"], tempo, bars: 2 }, 8)) {
-      assert.ok(g.expected.type === "taps" && g.expected.tolerances);
+  for (const asked of [60, 72, 120, 200]) {
+    for (const g of many("tap-rhythm", { values: ["s", "e", "q", "h"], tempo: asked, bars: 2 }, 8)) {
+      assert.ok(g.expected.type === "taps" && g.expected.tolerances && g.response.type === "tap");
+      // Sixteenths cannot be tapped above 84: a stray faster declaration is slowed.
+      const tempo = g.response.tempo;
+      assert.equal(tempo, Math.min(asked, 84));
       const { onsets, tolerances, toleranceBeats } = g.expected;
       assert.equal(tolerances.length, onsets.length);
       assert.ok(Math.abs(Math.min(...tolerances) - toleranceBeats) < 1e-9);
@@ -1134,4 +1137,210 @@ test("positionsSpellChord: only seventh chords may drop the fifth", () => {
   // C6 without its fifth is C–E–A, an A minor triad.
   assert.equal(positionsSpellChord([{ string: 5, fret: 3 }, { string: 4, fret: 2 }, { string: 3, fret: 2 }], "C6"), false);
   assert.equal(positionsSpellChord(shapePositions(GUITAR_SHAPES.C7), "C7"), true);
+});
+
+// --- round five ---------------------------------------------------------------
+
+test("play-note on the piano: an exact-octave question shows the C landmarks on one keyboard per declaration", () => {
+  for (const params of [{ instrument: "piano", from: "staff" }, { instrument: "piano", from: "staff", clef: "bass" }, { instrument: "piano", from: "name", anyOctave: false, range: ["C3", "C5"] }, { instrument: "piano", from: "staff", range: ["A3", "C6"], accidentals: true }]) {
+    const qs = many("play-note", params, 20);
+    const ranges = new Set(qs.map((q) => (q.response.type === "keyboard" ? q.response.range.join("-") : "")));
+    assert.equal(ranges.size, 1, `one range for ${JSON.stringify(params)}, got ${[...ranges]}`);
+    for (const q of qs) {
+      assert.ok(q.response.type === "keyboard" && q.expected.type === "notes" && q.expected.match === "exact");
+      assert.equal(q.response.labels, "landmarks");
+      const [lo, hi] = q.response.range;
+      assert.ok(q.expected.midis[0] >= lo && q.expected.midis[0] <= hi);
+      assert.ok(lo <= 60 && hi >= 60, "middle C is on the keyboard");
+    }
+  }
+  // Any octave will do: naming the Cs would give "play any C" away.
+  for (const q of many("play-note", { instrument: "piano", from: "name" }, 10)) assert.ok(q.response.type === "keyboard" && q.response.labels === "none");
+});
+
+const LETTER_INDEX = "CDEFGAB";
+const NATURAL_PC = [0, 2, 4, 5, 7, 9, 11];
+const pcOfName = (n: string) => (NATURAL_PC[LETTER_INDEX.indexOf(n[0])] + (n.includes("♯") ? 1 : n.includes("♭") ? -1 : 0) + 12) % 12;
+
+test("ear-interval: the two notes named in the explanation are spelled as that interval", () => {
+  const NUM: Record<string, number> = { second: 2, third: 3, fourth: 4, fifth: 5, sixth: 6, seventh: 7, octave: 8 };
+  let checked = 0;
+  for (const vocab of ["names", "full"]) {
+    for (const q of many("ear-interval", { intervals: ["m2", "M2", "m3", "M3", "P4", "P5", "m6", "M6", "m7", "M7", "P8"], vocab }, 30)) {
+      const m = /^That was an? (.+?): ([A-G][♯♭]?)(-?\d)? and ([A-G][♯♭]?)(-?\d)?, (\d+) half steps? apart\.$/.exec(q.explain);
+      assert.ok(m, q.explain);
+      const [, name, lo, , hi, , semis] = m;
+      const num = NUM[name.split(" ").pop()!];
+      assert.ok(num, name);
+      // Independent of the engine: letters apart, and half steps apart.
+      assert.equal((LETTER_INDEX.indexOf(hi[0]) - LETTER_INDEX.indexOf(lo[0]) + 7) % 7, (num - 1) % 7, `${q.explain}: letters must be a ${name}`);
+      assert.equal((pcOfName(hi) - pcOfName(lo) + 12) % 12, Number(semis) % 12, q.explain);
+      assert.ok(q.expected.type === "choice" && semitones(q.expected.id) === Number(semis));
+      assert.ok(!/[EB]♯|[FC]♭/.test(q.explain), `${q.explain}: no white key under another name`);
+      checked++;
+    }
+  }
+  assert.ok(checked > 1000);
+  // Counted in steps, a black key carries both names.
+  for (const q of many("ear-interval", { intervals: ["m2", "M2"], labels: "steps", vocab: "names" }, 20)) assert.ok(!/[A-G][♯♭](?! \/|\b.*\/)/.test(q.explain.replace(/[A-G]♯ \/ [A-G]♭/g, "")), q.explain);
+  // Below `full` the word "interval" is not used.
+  for (const q of many("ear-interval", { intervals: ["P8", "P5", "m2"], vocab: "plain" }, 5)) assert.ok(!/interval/i.test(q.prompt), q.prompt);
+});
+
+test("ear-find-note: flats come from the scale, and `vocab` limits what is named", () => {
+  for (const q of many("ear-find-note", { scale: "natural-minor" }, 20)) assert.ok(!/♯/.test(q.explain + q.prompt), `${q.prompt} ${q.explain}: C natural minor has E♭, A♭ and B♭`);
+  for (const q of many("ear-find-note", { vocab: "plain" }, 10)) {
+    assert.ok(!/\b[A-G][♯♭]?\d?\b(?! natural)/.test(`${q.prompt} ${q.explain} ${q.stimuli.map((s) => (s.type === "text" ? s.text : "")).join(" ")}`.replace(/^You|Find|The|Starts/g, "")), `${q.prompt} | ${q.explain}`);
+  }
+  for (const q of many("ear-find-note", { vocab: "letters", scale: "blues" }, 10)) assert.ok(!/[♯♭]/.test(q.prompt + q.explain), `${q.prompt} ${q.explain}`);
+});
+
+test("guitar chords: a copied diagram must be the shape itself; a free answer needs the root lowest within one hand's reach", () => {
+  const P = (s: string): FretPos[] => s.split(" ").map((x) => ({ string: Number(x.split("/")[0]), fret: Number(x.split("/")[1]) }));
+  for (const [symbol, shape] of Object.entries(GUITAR_SHAPES)) {
+    assert.equal(positionsSpellChord(shapePositions(shape), symbol, true), true, `${symbol} exact`);
+    assert.equal(positionsSpellChord(shapePositions(shape), symbol), true, `${symbol}: the stored shape is a playable voicing with the root lowest`);
+    assert.equal(positionsSpellChord(shapePositions(shape).slice(1), symbol, true), false, `${symbol}: a string left out`);
+  }
+  // Em: 022000.
+  assert.equal(positionsSpellChord(P("3/0 2/0 1/0"), "Em", true), false, "three open strings are not the diagram");
+  assert.equal(positionsSpellChord(P("3/0 2/0 1/0"), "Em"), false, "G in the bass is not E minor in root position");
+  assert.equal(positionsSpellChord(P("6/0 3/0 2/0"), "Em"), true, "open E, G and B are E minor, root lowest");
+  assert.equal(positionsSpellChord(P("6/0 5/2 4/14 3/0 2/0 1/0"), "Em"), false, "fret 2 with fret 14 is not one hand");
+  assert.equal(positionsSpellChord(P("6/0 5/2 4/5 3/4 2/5 1/0"), "Em"), true, "four frets is a hand");
+  assert.equal(positionsSpellChord(P("6/0 5/2 4/5 3/4 2/5 1/7"), "Em"), false, "six frets is not");
+  assert.equal(positionsSpellChord(P("6/0 5/2 4/2 3/0 2/0 1/0"), "Em", true), true);
+  // Am and C mute string 6.
+  assert.equal(positionsSpellChord(P("6/0 5/0 4/2 3/2 2/1 1/0"), "Am", true), false);
+  assert.equal(positionsSpellChord(P("6/0 5/0 4/2 3/2 2/1 1/0"), "Am"), false, "E under A minor");
+  assert.equal(positionsSpellChord(P("6/0 5/3 4/2 3/0 2/1 1/0"), "C"), false, "E under C");
+  assert.equal(positionsSpellChord(P("5/3 4/5 3/5 2/5 1/3"), "C"), true, "the barre voicing of C is as good as the open one");
+  assert.equal(positionsSpellChord(P("6/8 5/10 4/10 3/9 2/8 1/8"), "C"), true);
+  for (const q of many("play-chord", { instrument: "guitar", chords: ["Em", "Am", "C"], show: "diagram" }, 6)) {
+    assert.ok(q.expected.type === "chord-shape" && q.expected.exact === true);
+    const shape = shapePositions(GUITAR_SHAPES[q.expected.symbol]);
+    assert.equal(grade(q, { type: "notes", midis: shape.map((x) => fretMidi(x)), positions: shape }).correct, true);
+    assert.equal(grade(q, { type: "notes", midis: [], positions: [...shape.slice(1)] }).correct, false);
+  }
+  for (const q of many("play-chord", { instrument: "guitar", chords: ["Em", "Am", "C"] }, 6)) assert.ok(q.expected.type === "chord-shape" && !q.expected.exact);
+});
+
+test("rhythm drills are on the beat unless `syncopation` is set", () => {
+  const offBeat = (pattern: string, time: string) => {
+    const beat = time === "6/8" ? 1.5 : 1;
+    return parseRhythm(pattern.replaceAll("|", ""), time).some((e) => {
+      const inBar = e.at % parseTime(time).barBeats;
+      return e.duration.beats > 0.5 && Math.abs(inBar / beat - Math.round(inBar / beat)) > 1e-9 && !(time === "6/8" && e.duration.beats < 1.5);
+    });
+  };
+  const patternOf = (q: Question) => (q.response.type === "tap" ? q.response.pattern : q.stimuli[0]?.type === "rhythm" ? q.stimuli[0].pattern : "");
+  let dotted = 0;
+  for (const q of many("tap-rhythm", { values: ["q", "e", "q."], tempo: 66 }, 20)) {
+    assert.equal(offBeat(patternOf(q), "4/4"), false, patternOf(q));
+    if (/q\. e/.test(patternOf(q))) dotted++;
+    assert.ok(!/q\.(?! e)/.test(patternOf(q).replaceAll(" |", "")), `${patternOf(q)}: a dotted quarter is followed by its eighth`);
+  }
+  assert.ok(dotted > 50, "the dotted quarter still turns up");
+  for (const q of many("count-bar", { values: ["h.", "h", "q", "e"] }, 20)) {
+    // The bar shown has one value missing, so check the full bar instead.
+    assert.ok(q.expected.type === "choice");
+  }
+  for (const params of [{ values: ["h", "q", "e"] }, { values: ["q", "e", "q."] }, { time: "6/8", values: ["q.", "q", "e"] }, { time: "3/4", values: ["h", "q", "e", "qr"] }]) {
+    for (const q of many("ear-rhythm", params, 10)) {
+      assert.ok(q.response.type === "choice");
+      const right = q.response.choices.find((c) => q.expected.type === "choice" && c.id === q.expected.id)!;
+      assert.ok(right.stimulus?.type === "rhythm");
+      assert.equal(offBeat(right.stimulus.pattern, (params as { time?: string }).time ?? "4/4"), false, right.stimulus.pattern);
+    }
+  }
+  assert.ok(many("tap-rhythm", { values: ["q", "e", "q."], tempo: 66, syncopation: true }, 20).some((q) => offBeat(patternOf(q), "4/4")), "with syncopation, off-beat long notes appear");
+});
+
+test("tap-rhythm: the click is the counted beat, and no window is narrower than a hand can hit", () => {
+  for (const q of many("tap-rhythm", { time: "6/8", values: ["q.", "q", "e"], tempo: 60 }, 5)) {
+    assert.ok(q.response.type === "tap");
+    assert.equal(q.response.clickBeats, 0.5);
+    assert.equal(q.response.countInBeats / q.response.clickBeats, 6, "six clicks, as the explanation counts six");
+  }
+  for (const q of many("tap-rhythm", { values: ["h", "q"] }, 5)) assert.ok(q.response.type === "tap" && q.response.clickBeats === undefined && q.response.countInBeats === 4);
+  for (const q of many("tap-rhythm", { time: "2/2", values: ["h", "q"] }, 5)) assert.ok(q.response.type === "tap" && q.response.clickBeats === 2);
+  for (const [values, tempo, ok] of [[["s", "e"], 84, true], [["s", "e"], 85, false], [["e", "q"], 168, true], [["e", "q"], 169, false], [["q"], 240, true], [["s"], 240, false]] as const) {
+    assert.equal(checkParams(EXERCISES["tap-rhythm"].params, { values: [...values], tempo }).length === 0, ok, `${values} at ${tempo}`);
+    assert.equal(tapWindowSeconds(Math.min(...values.map((v) => parseDuration(v).beats)), tempo) >= MIN_TAP_WINDOW_SECONDS - 1e-9, ok);
+  }
+});
+
+test("chord symbols: answers can be symbols, the prompt need not translate, and one quality is never the only choice", () => {
+  for (const q of many("name-chord", { view: "keyboard", chords: ["C", "F", "G", "Am", "Dm", "Em"], answers: "symbols" }, 10)) {
+    assert.ok(q.response.type === "choice");
+    for (const c of q.response.choices) assert.ok(/^[A-G][♯♭]?m?$/.test(c.label), c.label);
+    assert.ok(!/major|minor/.test(q.prompt));
+  }
+  for (const instrument of ["piano", "guitar"]) {
+    for (const q of many("play-chord", { instrument, chords: ["C", "Am", "Dm"], ask: "symbol" }, 6)) {
+      assert.ok(!/major|minor|\(/.test(q.prompt), q.prompt);
+      assert.ok(q.stimuli.some((s) => s.type === "text" && /^[A-G]m?$/.test(s.text)));
+    }
+  }
+  for (const q of many("name-chord", { view: "keyboard", qualityOnly: true, types: ["sus2", "sus4"], roots: ["C", "G", "D"] }, 10)) {
+    assert.ok(q.response.type === "choice" && q.response.choices.length >= 2, "something to choose from");
+    assert.ok(q.expected.type === "choice" && q.response.choices.some((c) => q.expected.type === "choice" && c.id === q.expected.id));
+  }
+});
+
+test("what the loader now refuses: declarations no generator could honour", () => {
+  const bad = (kind: string, params: Record<string, unknown>, re: RegExp) => {
+    const got = checkParams(EXERCISES[kind].params, params);
+    assert.ok(got.length > 0 && got.some((m) => re.test(m)), `${kind} ${JSON.stringify(params)} → ${JSON.stringify(got)}`);
+  };
+  const good = (kind: string, params: Record<string, unknown>) => assert.deepEqual(checkParams(EXERCISES[kind].params, params), [], `${kind} ${JSON.stringify(params)}`);
+  assert.equal(isTime("0/4"), false);
+  assert.equal(isTime("99/2"), false);
+  assert.equal(isTime("12/8"), true);
+  bad("count-bar", { values: ["q"], time: "0/4" }, /time signature/);
+  bad("count-bar", { time: "5/4", values: ["w", "h"] }, /cannot fill/);
+  bad("count-bar", { values: ["w"] }, /at least 2/);
+  bad("count-bar", { values: ["qr", "hr"] }, /all rests/);
+  bad("tap-rhythm", { time: "3/4", values: ["q."] }, /syncopation/);
+  good("tap-rhythm", { time: "3/4", values: ["q."], syncopation: true });
+  good("count-bar", { time: "6/8", values: ["q.", "q", "e"] });
+  assert.equal(canFillBar(["q.", "e"], "4/4"), true);
+  assert.equal(canFillBar(["h."], "4/4"), false);
+  bad("ear-interval", { intervals: ["P1", "P5"] }, /unison/);
+  bad("ear-interval", { intervals: ["d2", "M2"] }, /no half steps/);
+  bad("ear-interval", { intervals: ["P29"] }, /interval|wider/);
+  bad("build-interval", { intervals: ["d2"] }, /no half steps/);
+  bad("name-interval", { view: "staff", intervals: ["d2"] }, /no half steps/);
+  bad("name-note", { view: "staff", range: ["C0", "C1"] }, /ledger/);
+  bad("name-note", { view: "staff", clef: "bass", range: ["C2", "C5"] }, /ledger/);
+  good("name-note", { view: "staff", range: ["A3", "C6"] });
+  good("name-note", { view: "staff", clef: "bass", range: ["E2", "E4"] });
+  bad("name-note", { view: "keyboard", range: ["C#4", "C#4"] }, /black key/);
+  good("name-note", { view: "keyboard", range: ["C#4", "C#4"], accidentals: true });
+  bad("play-note", { instrument: "piano", from: "name", range: ["C8", "C9"] }, /piano/);
+  bad("play-note", { instrument: "piano", from: "staff", range: ["C1", "C2"] }, /ledger/);
+  bad("play-note", { instrument: "guitar", from: "staff", clef: "bass" }, /treble/);
+  bad("play-note", { instrument: "guitar", from: "name", strings: [6], maxFret: 2, range: ["F#2", "F#2"] }, /sharps and flats/);
+  good("play-note", { instrument: "guitar", from: "name", strings: [6], maxFret: 2, range: ["F#2", "F#2"], accidentals: true });
+  bad("name-chord", { view: "staff", chords: ["B#aug"] }, /triple/);
+  good("name-chord", { view: "staff", chords: ["Baug", "Cdim7"] });
+});
+
+test("explanations name only what the lesson has reached", () => {
+  // An open-strings lesson (maxFret 0) is not told about fretted places.
+  for (const q of many("play-note", { instrument: "guitar", from: "name", maxFret: 0 }, 10)) assert.ok(!/fret \d/.test(q.explain), q.explain);
+  // A major-key lesson comes before relative minors.
+  for (const q of many("name-key", {}, 10)) assert.ok(!/relative/.test(q.explain), q.explain);
+  assert.ok(many("name-key", { mode: "both" }, 5).every((q) => /relative/.test(q.explain)));
+  // A half step up or down from a white key lands on a key with two names.
+  for (const q of many("build-interval", { intervals: ["m2", "M2"], labels: "steps", direction: "both", vocab: "names" }, 20)) {
+    if (/[♯♭]/.test(q.explain.split(" is ").slice(1).join(" is "))) assert.ok(/[A-G]♯ \/ [A-G]♭/.test(q.explain), q.explain);
+    assert.ok(!/key or fret/.test(q.explain));
+  }
+  for (const q of many("tap-rhythm", { values: ["q"], tempo: 60 }, 2)) assert.ok(!/\bbar\b/.test(q.prompt.replace(" on the space bar", "")) && / on the space bar/.test(q.prompt), q.prompt);
+  // A pure tone never drops below G3.
+  for (const q of many("ear-higher-lower", { timbre: "sine", minSemitones: 3, maxSemitones: 12 }, 30)) {
+    const s = q.stimuli[0];
+    assert.ok(s.type === "sound" && s.sound.events.every((e) => e.midis.every((m) => m >= 55)));
+  }
 });

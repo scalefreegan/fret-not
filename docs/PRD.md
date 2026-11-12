@@ -193,7 +193,9 @@ How a tutor turn works (`web/server/chat.ts`, `web/server/turn.ts`):
   `.DS_Store` excepted), no file there marked assume-unchanged or
   skip-worktree, no symbolic link or `.git` entry in it, `HEAD` on a branch
   that has at least one commit, and no merge, rebase, cherry-pick, revert or
-  bisect in progress. Uncommitted work outside `content/` does not matter.
+  bisect in progress. `content/` must also be a real folder inside the
+  repository, not reached through a symbolic link. Uncommitted work outside
+  `content/` does not matter.
 - **Otherwise the turn is read-only.** It runs in the repository with Read,
   Glob and Grep only (no Write or Edit tool exists for it), answers
   questions as usual, and the chat says once why it cannot write and what to
@@ -216,35 +218,67 @@ How a tutor turn works (`web/server/chat.ts`, `web/server/turn.ts`):
   already refused at the last commit is unknown and so not protected.)
 - **If it is valid**, what changed under `content/` is committed in the
   worktree as `agent: <summary>`, and the branch is fast-forwarded to that
-  commit with `git merge --ff-only`, but only if the repository is still on
-  the same branch at the same commit and `content/` is still clean. git
-  performs the fast-forward as one operation and refuses rather than
-  overwrite a file in the way. Staged and unstaged work outside `content/`
-  is not touched.
+  commit, but only if the repository is still on the same branch at the same
+  commit and `content/` is still clean. The fast-forward is two plumbing
+  calls, not `git merge`, so no setting of the owner's (`merge.autoStash`,
+  `merge.ff`, `pull.*`) can change what it does: `git read-tree -m -u`
+  writes the commit's files into the index and working tree, touching only
+  the paths the commit changed and refusing as a whole if one of them is not
+  as the last commit has it; then `git update-ref` moves the branch only if
+  it is still where the turn started. Staged and unstaged work outside
+  `content/` is not touched. The files are written with the owner's own
+  line-ending and filter settings, as any checkout of theirs would be.
+- **What is not closed.** The checks and the two calls are milliseconds
+  apart, not one atomic step. An owner git command that lands exactly in
+  that gap can still have a git-ignored file it just created under
+  `content/` overwritten, or find the tutor's files staged on a branch it
+  just created, or sweep them into a commit it just made. If the server is
+  killed between the two calls, the tutor's files are in `content/` and
+  staged while the branch has not moved; the commit is still named
+  `refs/tutor/<id>` and the next turn says so and how to finish or back out.
 - **If the fast-forward is not possible** (the owner saved or committed
   something meanwhile), the commit is kept under `refs/tutor/<id>`, nothing
   in the working tree changes, and the chat gives the commands to take it
   (`git merge --ff-only <ref>` or `git cherry-pick <ref>`) or drop it.
 - **If it is not valid** after the repair turn, or the run failed, timed out
-  or was cancelled (including Stop pressed after the agent finished but
-  before the commit), or the commit itself failed, the worktree is deleted
+  or was cancelled, or the commit itself failed, the worktree is deleted
   and the chat says so. Nothing was written to the repository, so nothing is
   undone and no copy of the attempt is kept.
+- **Stop.** The connection is watched from the moment the request arrives.
+  A Stop (or a closed page) before the agent starts means it is never
+  started; during the run it is killed; after the run but before the files
+  are written, the commit is not applied and not kept. Once the files are
+  being written the apply runs to its end (it takes milliseconds) and the
+  chat history shows the commit; the panel re-reads the history after a
+  Stop for that reason.
+- **A kept commit is never silent.** At the start of each turn the server
+  lists `refs/tutor/*`. A name whose commit is already on the branch is
+  dropped; one that no message in the chat history mentions (the server
+  stopped before it could say) is reported then.
 - **git hooks do not run and commits are not signed** for the tutor's git
   calls (`core.hooksPath=/dev/null`, `commit.gpgsign=false`), so a hook
-  cannot refuse, stall or half-apply a turn. Each git call has a 60-second
-  timeout. Nothing is pushed.
+  cannot refuse, stall or half-apply a turn. The same calls switch off a
+  configured file-system monitor program, submodule recursion and automatic
+  gc. Each git call has a 60-second timeout. Nothing is pushed.
 - **If the server stops mid-turn**: on a normal quit (SIGTERM, Ctrl-C) the
   agent is killed and the worktree deleted before the process exits. After a
-  crash or a kill the worktree is left in the temp directory; any start or
-  turn more than 45 minutes later deletes it (by its path and age) and runs
-  `git worktree prune`. An agent orphaned by a killed server is not hunted
+  crash or a kill the worktree is left in the temp directory, with a marker
+  naming the server process that made it (pid and start time). The next
+  start or turn removes it if that process is no longer running (`ps` is
+  asked; nothing is signalled); a worktree whose maker is still running is
+  left alone however old, so a Mac that slept mid-turn loses nothing; one
+  with no readable marker is removed after 45 minutes. Each is removed by
+  its own path (`git worktree remove`); `git worktree prune` is never run,
+  because it would also drop the owner's own worktrees whose folder is
+  temporarily missing. Old prompt temp directories are removed the same
+  way, by name and age. An agent orphaned by a killed server is not hunted
   down: it can only write in that leftover directory, and stops by itself
-  at its turn limit. No process is ever looked up or killed by pid.
+  at its turn limit. No process is ever signalled or killed by pid.
 - One turn at a time per server process (a second request gets 409). Two
   copies of the app on one repository would each use their own worktree; the
   second to finish cannot fast-forward and its commit is kept under a ref.
-- The transcript is passed to the CLI on stdin, and the part replayed is
+- The transcript is passed to the CLI on stdin (the system prompt, which
+  holds the curriculum outline, goes on the command line), and the part replayed is
   bounded by bytes as well as by message count. `data/chat.jsonl` is trimmed
   to its newest messages once it passes about 1 MB.
 
@@ -255,10 +289,19 @@ Progress rules worth knowing (`web/shared/progress.ts`):
 - `dueConcepts(progress, now, known)` counts only concepts that still exist
   and have an exercise (`reviewableConcepts(content)`), so the review badge
   cannot show something that can never be cleared.
-- A level opens when its **gate** has 80% of its reviewable concepts
-  mastered. The gate is the nearest earlier level that has any reviewable
+- A level opens when its **gate** has 70% (`UNLOCK_FRACTION`) of its
+  reviewable concepts mastered, counted over the core plus the instrument
+  tracks that suit the learner. The gate is the nearest earlier level that has any reviewable
   concept; a level with none (empty, an outline, or not yet drilled) is
   skipped. `levelStatuses` reports each level's `gate`.
+- A lesson is **done** once a run of its exercises scores 60%
+  (`LESSON_DONE_SCORE`); below that it is *attempted*: not ticked off, and
+  still what Continue offers. Continue (`nextLesson`) keeps to the core and
+  the instrument tracks the learner has worked in.
+- The **placement check** asks about the core and the instruments the learner
+  follows (`placementConcepts`) and credits only those concepts; they fall
+  due over the following one to two weeks, not all on one day. Placing one
+  past the last level means every level was passed.
 - `POST /api/progress/answers` always replies with `dropped` (how many
   answers were not recorded because their concept id is not in the
   curriculum), `lessonDropped` (the lesson completion was not recorded) and
@@ -283,7 +326,6 @@ Progress rules worth knowing (`web/shared/progress.ts`):
 
 ## Known gaps in v1
 
-- Eighth and sixteenth notes are drawn with flags, not beamed.
 - The "complete a short melody" build exercise is not implemented; the
   Sketchpad covers free composing.
 - Guitar samples are the six open strings pitch-shifted, so high frets sound

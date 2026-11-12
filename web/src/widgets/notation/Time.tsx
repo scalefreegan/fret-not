@@ -154,7 +154,9 @@ export function useTapSession() {
     setTaps([...s.taps]);
   }, []);
   const start = useCallback(
-    (tempo: number, countInBeats: number, lengthBeats: number, onDone: (taps: number[]) => void) => {
+    // `clickBeats`: quarter-note beats between clicks (0.5 in 6/8, where the
+    // pulse that is counted is the eighth). The count shown is in clicks.
+    (tempo: number, countInBeats: number, lengthBeats: number, onDone: (taps: number[]) => void, clickBeats = 1) => {
       cancel();
       const spb = 60 / tempo;
       const tStart = audioNow() + 0.15;
@@ -163,11 +165,13 @@ export function useTapSession() {
       ref.current = s;
       setTaps([]);
       setState("count-in");
-      const total = countInBeats + Math.ceil(lengthBeats);
+      const step = clickBeats > 0 ? clickBeats : 1;
+      const inClicks = Math.round(countInBeats / step);
+      const total = inClicks + Math.ceil(lengthBeats / step - 1e-9);
       for (let b = 0; b < total; b++) {
-        const delay = 0.15 + b * spb;
-        s.clicks.push(playClick({ accent: b === 0 || b === countInBeats, delay }));
-        s.timers.push(window.setTimeout(() => { setCountBeat(b < countInBeats ? b + 1 : 0); if (b === countInBeats) setState("go"); }, delay * 1000));
+        const delay = 0.15 + b * step * spb;
+        s.clicks.push(playClick({ accent: b === 0 || b === inClicks, delay }));
+        s.timers.push(window.setTimeout(() => { setCountBeat(b < inClicks ? b + 1 : 0); if (b === inClicks) setState("go"); }, delay * 1000));
       }
       s.timers.push(window.setTimeout(() => { s.live = false; setState("done"); onDone([...s.taps]); }, (0.15 + (countInBeats + lengthBeats + 0.4) * spb) * 1000));
     },

@@ -44,22 +44,28 @@ macos/                   Dock app (Fret Not.app)
   notation is shown an octave higher by the widgets (`GUITAR_WRITTEN_OFFSET`).
 - Files under `web/shared/` are run directly by Node (type stripping): explicit
   `.ts` import extensions, erasable syntax only.
-- The tutor spawns headless `claude -p` on the Claude Code login (no API key);
-  the prompt goes in on stdin (never argv). **It never writes into the
-  working tree.** When `content/` is exactly the last commit (and `HEAD` is on
-  a branch, nothing like a rebase is in progress, and `content/` holds no
+- The tutor spawns headless `claude -p` on the Claude Code login (no API key).
+  The conversation goes in on stdin; the system prompt (the curriculum
+  outline and any loader problems) goes on the command line. **It never
+  writes into the working tree.** When `content/` is exactly the last commit
+  (and `HEAD` is on a branch, nothing like a rebase is in progress,
+  `content/` is a real folder, not reached through a symlink, and holds no
   symlink or `.git`), the turn runs in a git worktree in the temp directory
   and may Write/Edit only under that worktree's `content/`. The server
   validates the result there (loader problems, a lesson or concept id that
   disappeared, a file that is not a curriculum file, a dot-file), gives the
   agent one repair turn, commits it in the worktree as `agent: <summary>`
-  and fast-forwards the branch with `git merge --ff-only`. If the
+  and fast-forwards the branch with plumbing (`git read-tree -m -u`, then a
+  compare-and-swap `git update-ref`), never `git merge`, so the owner's git
+  settings (`merge.autoStash` and the like) have no say. If the
   fast-forward is no longer possible the commit is kept under
   `refs/tutor/<id>` and the chat says how to take it. A turn that is invalid,
-  cancelled, timed out or dead just has its worktree deleted. In any other
-  repository state the turn is read-only (Read/Glob/Grep) and the chat says
-  to commit or stash `content/` first. The tutor's git calls run no hooks
-  and do not sign. `web/server/turn.ts` explains the rules.
+  cancelled (Stop at any point before the files are written), timed out or
+  dead just has its worktree deleted. In any other repository state the turn
+  is read-only (Read/Glob/Grep) and the chat says to commit or stash
+  `content/` first. The tutor's git calls run no hooks and do not sign, and
+  never run `git worktree prune`. `web/server/turn.ts` explains the rules
+  and lists the few-millisecond windows that are not closed.
 - So: **commit or stash your own edits in `content/` before asking the tutor
   to write.** The tutor sees the repository as of the last commit, plus the
   live `docs/CONTENT.md` and `docs/CONTENT-REFERENCE.md`.

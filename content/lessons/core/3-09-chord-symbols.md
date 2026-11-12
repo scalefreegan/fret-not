@@ -12,17 +12,21 @@ exercises:
     title: Write the symbol
     count: 8
     view: keyboard
+    answers: symbols
     chords: [C, F, G, Am, Dm, Em, D, A, E]
   - kind: name-chord
     concept: chord-symbols
     title: From the staff
     count: 5
     view: staff
+    answers: symbols
     chords: [C, F, G, Am, Dm, Em]
   - kind: play-chord
     concept: chord-symbols
+    title: Play from the symbol
     count: 6
     instrument: piano
+    ask: symbol
     chords: [C, F, G, Am, Dm, Em]
   - kind: quiz
     concept: chord-symbols

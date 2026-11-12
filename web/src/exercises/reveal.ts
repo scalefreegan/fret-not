@@ -66,15 +66,22 @@ export function classifyAnswer(expected: Expected, played: Played[], ctx: Reveal
     }
     const want = new Set(pcs);
     const seenStrings = new Set<number>();
+    // "Copy this diagram": the shape itself is the answer, so a note is right
+    // only where the diagram has it (a muted string played, or the right note
+    // at another fret, is wrong).
+    const exact = !!expected.exact;
+    const exactShape = exact ? GUITAR_SHAPES[expected.symbol] : undefined;
+    const shapeKeys = exactShape ? new Set(shapePositions(exactShape).map(posKey)) : null;
     const given = played.map((p) => {
       const twice = !!p.pos && seenStrings.has(p.pos.string);
       if (p.pos) seenStrings.add(p.pos.string);
+      if (shapeKeys) return !twice && !!p.pos && shapeKeys.has(posKey(p.pos)) ? ("good" as const) : ("bad" as const);
       return !twice && want.has(pc(p.midi)) ? ("good" as const) : ("bad" as const);
     });
     const positions = played.flatMap((p) => (p.pos ? [p.pos] : []));
     let correct = false;
     try {
-      correct = positions.length > 0 && positionsSpellChord(positions, expected.symbol);
+      correct = positions.length > 0 && positionsSpellChord(positions, expected.symbol, exact);
     } catch {
       /* stays false */
     }

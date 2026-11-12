@@ -367,3 +367,31 @@ test("the highest open level is recorded with answers, placement and a later GET
     for (const name of Object.keys(files)) fs.rmSync(path.join(dir, "lessons", "core", name), { force: true });
   }
 });
+
+test("placement one past the last level is a real result; further is refused", async () => {
+  const top = await call("POST", "/placement", { level: 3 });
+  assert.equal(top.status, 200, "levels are 0–2: 3 means every level was passed");
+  assert.equal(top.json.progress.placedLevel, 3);
+  assert.deepEqual(Object.keys(top.json.progress.concepts).sort(), ["alpha", "beta", "gamma"]);
+  assert.equal((await call("POST", "/placement", { level: 4 })).status, 400);
+  assert.equal((await call("POST", "/placement", { level: -1 })).status, 400);
+});
+
+test("while a lesson is refused, an opened level is not put on record", async () => {
+  const dir = path.join(tmp, "content", "lessons", "core");
+  const drilled = (id: string, concept: string) => LESSON.replace("core-0-alpha", id).replace("concepts: [alpha]", `concepts: [${concept}]`).replace("summary: About alpha.", `summary: About it.\nexercises:\n  - { kind: quiz, concept: ${concept}, count: 1, questions: [{ q: "Yes?", choices: ["yes", "no"], answer: 1, explain: "Yes." }] }`);
+  // alpha's lesson loads; beta's is refused (an unknown exercise kind), so
+  // level 0 looks as if alpha were all it asks.
+  const files = { "0-02-a.md": drilled("core-0-a", "alpha"), "0-03-b.md": drilled("core-0-b", "beta").replace("kind: quiz", "kind: no-such-kind") };
+  try {
+    for (const [name, text] of Object.entries(files)) fs.writeFileSync(path.join(dir, name), text);
+    const four = [true, true, true, true].map((correct) => ({ concept: "alpha", correct }));
+    const r = await call("POST", "/answers", { results: four });
+    assert.equal(r.json.progress.openedLevel, 0, "nothing is remembered from a curriculum that did not load whole");
+    fs.writeFileSync(path.join(dir, "0-03-b.md"), drilled("core-0-b", "beta"));
+    const later = await call("GET", "");
+    assert.equal(later.json.progress.openedLevel, 0, "with beta's lesson back, level 1 is shut, as it should be");
+  } finally {
+    for (const name of Object.keys(files)) fs.rmSync(path.join(dir, name), { force: true });
+  }
+});

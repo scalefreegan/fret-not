@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import path from "node:path";
-import { applyPlacement, emptyProgress, RECENT_WINDOW, recordAnswers, recordLesson, rememberOpened, REVIEW_INTERVAL_DAYS, type AnswerResult, type Progress } from "../shared/progress.ts";
+import { applyPlacement, emptyProgress, placementTracks, RECENT_WINDOW, recordAnswers, recordLesson, rememberOpened, REVIEW_INTERVAL_DAYS, type AnswerResult, type Progress } from "../shared/progress.ts";
 import { isId, loadContent, REPO_ROOT } from "./loader.ts";
 import type { AnswersReply, ProgressReply } from "../shared/wire.ts";
 import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./sse.ts";
@@ -235,6 +235,14 @@ function reply(res: ServerResponse, loaded: Loaded): void {
  *
  *  Any response may also carry `recovered: true` and `recoveredTo` (see
  *  loadProgress); the answers reply always states `recovered`. */
+/** Which levels are open is only worth remembering when the whole curriculum
+ *  loaded. While a lesson is refused, its concepts look as if nothing tested
+ *  them, the level asks less than it should, and a level opened on that
+ *  basis would stay open for good. */
+function canRemember(content: ReturnType<typeof loadContent>): boolean {
+  return content.levels.length > 0 && content.concepts.length > 0 && content.problems.length === 0;
+}
+
 export async function handleProgress(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const route = subPath(req);
   const profile = DEFAULT_PROFILE;
@@ -248,7 +256,7 @@ export async function handleProgress(req: IncomingMessage, res: ServerResponse):
     // written (a new learner has nothing to protect, and GET creates nothing),
     // and only when the curriculum can be read and the record moves.
     const content = loadContent();
-    const noted = content.levels.length > 0 && content.concepts.length > 0 ? rememberOpened(content, loaded.progress) : loaded.progress;
+    const noted = canRemember(content) ? rememberOpened(content, loaded.progress) : loaded.progress;
     if (noted.openedLevel !== loaded.progress.openedLevel && fs.existsSync(progressPath(profile))) {
       saveProgress(profile, noted);
       return reply(res, { ...loaded, progress: noted });
@@ -289,7 +297,7 @@ export async function handleProgress(req: IncomingMessage, res: ServerResponse):
       if (unreadable || content.lessons.some((l) => l.id === lesson.id)) progress = recordLesson(progress, lesson.id, lesson.score, now);
       else lessonDropped = true;
     }
-    if (!unreadable) progress = rememberOpened(content, progress);
+    if (canRemember(content)) progress = rememberOpened(content, progress);
     saveProgress(profile, progress);
     if (dropped) console.warn(`[fret-not] progress: ${dropped} answer(s) not recorded: their concept id is not in the curriculum`);
     if (lessonDropped) console.warn(`[fret-not] progress: completion of lesson "${lesson?.id}" not recorded: no such lesson is loaded`);
@@ -301,11 +309,17 @@ export async function handleProgress(req: IncomingMessage, res: ServerResponse):
     const body = await readJsonBody<{ level?: unknown }>(req);
     const content = loadContent();
     const level = body.level;
-    if (typeof level !== "number" || !content.levels.some((l) => l.id === level)) {
-      throw new HttpError(400, `\`level\` must be one of the curriculum's levels: ${content.levels.map((l) => l.id).join(", ")}`);
+    // One past the last level is a real result: every level was passed.
+    const top = Math.max(-1, ...content.levels.map((l) => l.id)) + 1;
+    if (typeof level !== "number" || !(content.levels.some((l) => l.id === level) || (content.levels.length > 0 && level === top))) {
+      throw new HttpError(400, `\`level\` must be one of the curriculum's levels (${content.levels.map((l) => l.id).join(", ")}) or ${top}, one past the last`);
     }
     const loaded = loadProgress(profile, now);
-    const progress = rememberOpened(content, applyPlacement(loaded.progress, level, content.concepts, now));
+    // Credit only the tracks the check stood for: the core and the
+    // instruments this learner follows.
+    const tracks = placementTracks(content, loaded.progress);
+    const placed = applyPlacement(loaded.progress, level, content.concepts.filter((c) => tracks.has(c.track)), now);
+    const progress = canRemember(content) ? rememberOpened(content, placed) : placed;
     saveProgress(profile, progress);
     return reply(res, { ...loaded, progress });
   }

@@ -45,15 +45,62 @@ export interface TimeSignature {
   /** Length of one bar in quarter-note beats. */
   barBeats: number;
 }
+/** A time signature the app can draw and count: 1 to 12 beats over 2, 4, 8 or
+ *  16. "0/4" has no beats and "99/2" is not music anyone reads. */
+const TIME_RE = /^(\d{1,2})\/(2|4|8|16)$/;
+export const MAX_TIME_BEATS = 12;
 export function parseTime(s: string): TimeSignature {
-  const m = /^(\d{1,2})\/(2|4|8|16)$/.exec(s);
-  if (!m) throw new Error(`not a time signature: "${s}" (expected e.g. 4/4, 3/4, 6/8)`);
+  const m = TIME_RE.exec(s);
+  if (!m || Number(m[1]) < 1 || Number(m[1]) > MAX_TIME_BEATS) throw new Error(`not a time signature: "${s}" (expected e.g. 4/4, 3/4, 6/8; 1 to ${MAX_TIME_BEATS} beats over 2, 4, 8 or 16)`);
   const beats = Number(m[1]);
   const unit = Number(m[2]);
   return { beats, unit, barBeats: beats * (4 / unit) };
 }
 export function isTime(s: unknown): s is string {
-  return typeof s === "string" && /^(\d{1,2})\/(2|4|8|16)$/.test(s);
+  const m = typeof s === "string" ? TIME_RE.exec(s) : null;
+  return !!m && Number(m[1]) >= 1 && Number(m[1]) <= MAX_TIME_BEATS;
+}
+
+/** Compound time: 6/8, 9/8, 12/8 (and the same over 16), felt in dotted beats. */
+export function isCompound(time: string): boolean {
+  const ts = parseTime(time);
+  return ts.unit >= 8 && ts.beats >= 6 && ts.beats % 3 === 0;
+}
+/** The length of the felt beat in quarter notes: 1 in 4/4, 2 in 2/2, 1.5 in 6/8. */
+export function beatLength(time: string): number {
+  const ts = parseTime(time);
+  return isCompound(time) ? (4 / ts.unit) * 3 : 4 / ts.unit;
+}
+/** Where a note of this length may start and still be "on the beat" (not
+ *  syncopated): a multiple of this many quarter notes from the bar line. A
+ *  note of a beat or longer starts on a beat; a shorter one on a multiple of
+ *  its own length; a dotted note where its undotted double would (so a dotted
+ *  quarter starts on a beat and the eighth after it fills the gap). */
+export function startGrid(d: Duration, time: string): number {
+  const beat = beatLength(time);
+  const base = BEATS[d.value];
+  if (isCompound(time)) return d.beats >= beat - 1e-9 ? beat : Math.min(base, beat / 3);
+  return Math.min(d.dotted ? base * 2 : base, beat);
+}
+export function startsOnGrid(d: Duration, at: number, time: string): boolean {
+  const q = at / startGrid(d, time);
+  return Math.abs(q - Math.round(q)) < 1e-9;
+}
+/** Can one bar of `time` be filled exactly from these duration tokens, with
+ *  at least `minEvents` events and at least one sounding note? With `aligned`,
+ *  every event must also start on its grid (startsOnGrid). */
+export function canFillBar(values: readonly string[], time: string, minEvents = 1, aligned = true): boolean {
+  const bar = parseTime(time).barBeats;
+  const durs = values.filter(isDuration).map(parseDuration);
+  const seen = new Set<string>();
+  const walk = (at: number, events: number, note: boolean): boolean => {
+    if (Math.abs(at - bar) < 1e-9) return events >= minEvents && note;
+    const key = `${Math.round(at * 64)}:${Math.min(events, minEvents)}:${note}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return durs.some((d) => at + d.beats <= bar + 1e-9 && (!aligned || startsOnGrid(d, at, time)) && walk(at + d.beats, events + 1, note || !d.rest));
+  };
+  return walk(0, 0, false);
 }
 
 /** One event in time: zero or more sounding MIDI notes (zero = a rest). */
@@ -191,4 +238,25 @@ export function countLabel(beatInBar: number, time: string): string {
   const eighths = frac * 8;
   if (Math.abs(eighths - Math.round(eighths)) < 1e-9) return "&";
   return "";
+}
+
+// --- tapping --------------------------------------------------------------
+
+/** About 110 ms either side of a note counts as on time. */
+export const TAP_TOLERANCE_SECONDS = 0.11;
+/** But never more than this share of the gap to the nearest other note, so
+ *  the windows of two neighbouring notes cannot overlap. */
+export const TAP_TOLERANCE_GAP_SHARE = 0.45;
+/** A window narrower than this either side cannot be hit on purpose with a
+ *  space bar or a touch screen: a tap-rhythm declaration whose shortest note
+ *  at its tempo would need one is refused by the loader. */
+export const MIN_TAP_WINDOW_SECONDS = 0.08;
+/** The narrowest window (seconds either side) a pattern can have when its
+ *  shortest note lasts `shortestBeats` quarter notes at `tempo`. */
+export function tapWindowSeconds(shortestBeats: number, tempo: number): number {
+  return Math.min(TAP_TOLERANCE_SECONDS, (shortestBeats * 60 * TAP_TOLERANCE_GAP_SHARE) / tempo);
+}
+/** The fastest tempo at which notes this short can still be tapped. */
+export function maxTapTempo(shortestBeats: number): number {
+  return Math.floor((shortestBeats * 60 * TAP_TOLERANCE_GAP_SHARE) / MIN_TAP_WINDOW_SECONDS + 1e-9);
 }

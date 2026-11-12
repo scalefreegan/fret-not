@@ -163,10 +163,17 @@ test("levels unlock by mastery of the level before, by placement, and never when
 });
 
 test("levelStatuses counts lessons done per level", () => {
-  let p = P.recordLesson(fresh(), "l0a", 0.5, T0);
+  let p = P.recordLesson(fresh(), "l0a", 0.7, T0);
   p = P.recordLesson(p, "l1", 1, T0);
+  // A run that scored 18% is an attempt, not a lesson done.
+  p = P.recordLesson(p, "l0b", 0.18, T0);
   const st = P.levelStatuses(content, p);
   assert.deepEqual(st.map((s) => [s.lessonsDone, s.lessonsTotal]), [[1, 2], [1, 1], [0, 1], [0, 0]]);
+  assert.equal(P.lessonState(p.lessons.l0a), "done");
+  assert.equal(P.lessonState(p.lessons.l0b), "attempted");
+  assert.equal(P.lessonState(p.lessons.nope), "new");
+  assert.equal(P.isLessonDone(P.recordLesson(p, "l0b", P.LESSON_DONE_SCORE, T0).lessons.l0b), true);
+  assert.equal(P.nextLesson(content, p)?.id, "l0b", "an attempted lesson is offered again");
 });
 
 test("nextLesson walks the path, skipping done lessons and locked levels", () => {
@@ -397,4 +404,56 @@ test("a level that has been open stays open when the curriculum grows or a conce
   // An outline level is never opened by the record.
   const outlined = { ...c, levels: [level(0), level(1), { ...level(2), status: "outline" as const }] };
   assert.deepEqual(P.levelStatuses(outlined, { ...p, openedLevel: 2 }).map((s) => s.unlocked), [true, true, false]);
+});
+
+// --- one instrument: placement and Continue -----------------------------------
+
+const trackLesson = (id: string, lvl: number, track: string, concepts: string[]): Lesson => ({ ...lesson(id, lvl, concepts), track });
+const multi: Pick<Content, "levels" | "concepts" | "lessons" | "tracks"> = {
+  tracks: [
+    { id: "core", title: "Core", summary: "" },
+    { id: "piano", title: "Piano", summary: "", instrument: "piano" },
+    { id: "guitar", title: "Guitar", summary: "", instrument: "guitar" },
+  ],
+  levels: [level(0), level(1)],
+  concepts: [concept("c0a", 0), concept("c0b", 0), concept("p0", 0, "piano"), concept("g0", 0, "guitar"), concept("c1", 1), concept("p1", 1, "piano"), concept("g1", 1, "guitar"), concept("undrilled", 0)],
+  // Sorted as the loader sorts: by level, then track order.
+  lessons: [trackLesson("L-c0", 0, "core", ["c0a", "c0b"]), trackLesson("L-p0", 0, "piano", ["p0"]), trackLesson("L-g0", 0, "guitar", ["g0"]), trackLesson("L-c1", 1, "core", ["c1"]), trackLesson("L-p1", 1, "piano", ["p1"]), trackLesson("L-g1", 1, "guitar", ["g1"])],
+};
+
+test("placement asks only about the tracks the learner follows", () => {
+  const p = fresh();
+  assert.deepEqual(P.placementConcepts(multi, p, 0), ["c0a", "c0b"], "nobody new is asked about an instrument; undrilled concepts cannot be asked");
+  const pianist = P.recordLesson(p, "L-p0", 1, T0);
+  assert.deepEqual(P.placementConcepts(multi, pianist, 0), ["c0a", "c0b", "p0"]);
+  assert.deepEqual(P.placementConcepts(multi, pianist, 1), ["c1", "p1"]);
+  const guitarist = P.recordAnswers(p, ans("g0", true), T0);
+  assert.deepEqual(P.placementConcepts(multi, guitarist, 0), ["c0a", "c0b", "g0"]);
+  assert.deepEqual([...P.placementTracks(multi, pianist)].sort(), ["core", "piano"]);
+  const shuffled = P.placementConcepts(multi, pianist, 0, 42);
+  assert.deepEqual([...shuffled].sort(), ["c0a", "c0b", "p0"]);
+  assert.deepEqual(P.placementConcepts(multi, pianist, 0, 42), shuffled, "the same seed gives the same order");
+});
+
+test("Continue stays on the learner's own instrument", () => {
+  let p = fresh();
+  assert.equal(P.nextLesson(multi, p)?.id, "L-c0");
+  p = P.recordLesson(p, "L-c0", 1, T0);
+  assert.equal(P.nextLesson(multi, p)?.id, "L-p0", "no instrument chosen yet: the path as written");
+  p = P.recordLesson(p, "L-p0", 1, T0);
+  for (const id of ["c0a", "c0b", "p0"]) p = master(p, id, T0);
+  assert.equal(P.levelStatuses(multi, p)[1].unlocked, true);
+  assert.equal(P.nextLesson(multi, p)?.id, "L-c1", "a pianist with level 1 open is not sent to the guitar's level 0");
+  p = P.recordLesson(P.recordLesson(p, "L-c1", 1, T0), "L-p1", 1, T0);
+  assert.equal(P.nextLesson(multi, p)?.id, "L-g0", "with their own tracks finished, the rest is offered");
+});
+
+test("placement spreads the tested-out concepts over a week of due dates", () => {
+  const concepts = Array.from({ length: 20 }, (_, i) => concept(`k${i}`, 0));
+  const p = P.applyPlacement(fresh(), 1, concepts, T0);
+  const perDay = new Map<string, number>();
+  for (const c of Object.values(p.concepts)) perDay.set(c.dueAt!, (perDay.get(c.dueAt!) ?? 0) + 1);
+  assert.equal(perDay.size, 7);
+  assert.ok(Math.max(...perDay.values()) <= 3);
+  assert.ok([...perDay.keys()].every((d) => d >= dueOn(7) && d <= dueOn(13)));
 });

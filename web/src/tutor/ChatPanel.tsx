@@ -77,6 +77,18 @@ function Rich({ text }: { text: string }) {
 /** A commit the server reported, as a transcript line: "<hash>: <summary>". */
 const commitLine = (c: Extract<ChatCommit, { hash: string }>): ChatMessage => ({ role: "commit", text: `${c.hash}: ${c.summary}`, ts: new Date().toISOString() });
 
+/** A note from the server may quote a git command in backticks: show it as
+ *  code rather than with the backticks. */
+function withCode(text: string) {
+  return text.split(/(`[^`\n]+`)/g).map((part, i) =>
+    part.length > 2 && part.startsWith("`") && part.endsWith("`") ? (
+      <code key={i} className="rounded bg-panel px-1 py-0.5 font-mono break-all">{part.slice(1, -1)}</code>
+    ) : (
+      part
+    ),
+  );
+}
+
 export default function ChatPanel({ context, onContentChanged }: { context: TutorContext; onContentChanged?: () => void }) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [draft, setDraft] = useState("");
@@ -158,7 +170,7 @@ export default function ChatPanel({ context, onContentChanged }: { context: Tuto
         // What became of the turn is the server's to say: a turn stopped
         // part-way is thrown away (it wrote in a copy of its own, and a note
         // says so), but a Stop that lands after the commit changes nothing.
-        setNote("Stopped. A turn stopped part-way leaves nothing behind: the tutor writes in a separate copy, which is thrown away, and nothing is committed.");
+        setNote("Stopped. If the tutor had not finished, its work is thrown away (it writes in a separate copy) and nothing is committed; if it had just finished, the messages above show the commit.");
         window.setTimeout(() => {
           onContentChanged?.();
           getChatHistory().then((h) => setMessages(h.messages), () => undefined);
@@ -198,7 +210,7 @@ export default function ChatPanel({ context, onContentChanged }: { context: Tuto
 
   return (
     <div className="flex min-h-0 flex-1 flex-col" data-testid="tutor-chat">
-      <div className="flex items-center gap-2 border-b border-line px-4 py-2">
+      <div className="flex items-center gap-2 border-b border-line px-4 py-2 short:py-0.5">
         <label className="flex min-w-0 flex-1 items-center gap-2 text-xs text-fg-3">
           Model
           <select aria-label="Model" className={`${inputClass} w-auto min-w-0 py-1 text-xs pointer-coarse:min-h-11`} value={settings?.model ?? ""} disabled={!settings || thinking} onChange={(e) => void pickModel(e.target.value)}>
@@ -254,7 +266,7 @@ export default function ChatPanel({ context, onContentChanged }: { context: Tuto
               </li>
             ) : m.role === "note" ? (
               <li key={i} className="rounded-lg bg-warn-soft px-3 py-2 text-xs whitespace-pre-wrap text-warn" data-role="note">
-                {m.text}
+                {withCode(m.text)}
               </li>
             ) : (
               <li key={i} className="leading-relaxed text-fg-2" data-role="assistant">
@@ -269,7 +281,7 @@ export default function ChatPanel({ context, onContentChanged }: { context: Tuto
             {fixing ? "The app refused part of that; the tutor is correcting it…" : `${modelLabel} is working…`} <span className="font-mono text-xs">{elapsed}s</span>
           </p>
         )}
-        {note && !thinking && <p className="mt-2 text-xs text-fg-3">{note}</p>}
+        {note && !thinking && <p className="mt-2 text-xs text-fg-3">{withCode(note)}</p>}
         {error && (
           <p className="mt-3 rounded-lg bg-bad-soft px-3 py-2 text-sm whitespace-pre-wrap text-bad" role="alert">
             {error}
@@ -279,7 +291,7 @@ export default function ChatPanel({ context, onContentChanged }: { context: Tuto
       </div>
 
       <form
-        className="flex items-end gap-2 border-t border-line p-3"
+        className="flex items-end gap-2 border-t border-line p-3 short:p-2"
         onSubmit={(e) => {
           e.preventDefault();
           void submit(draft);
@@ -303,7 +315,7 @@ export default function ChatPanel({ context, onContentChanged }: { context: Tuto
           rows={2}
           placeholder="Ask a question, or ask for more practice…"
           enterKeyHint="send"
-          className={`${inputClass} max-h-40 resize-none`}
+          className={`${inputClass} max-h-40 resize-none short:h-11 short:py-2`}
           disabled={thinking}
         />
         {thinking ? (

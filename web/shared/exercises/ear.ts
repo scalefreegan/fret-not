@@ -2,13 +2,13 @@ import type { Choice, Timbre } from "../exercise-types.ts";
 import { CHORDS, CHORD_ORDER } from "../music/chords.ts";
 import { positionsOf } from "../music/instruments.ts";
 import { intervalName, intervalOfSemitones, semitones } from "../music/intervals.ts";
-import { fromMidi, pc, pcLabel, pitchLabel, toMidi } from "../music/notes.ts";
+import { fromMidi, isBlackKey, pc, pcBothLabels, pcLabel, pitchLabel, toMidi, type Pitch } from "../music/notes.ts";
 import { parseDuration } from "../music/rhythm.ts";
 import { isScaleType, scaleNotes } from "../music/scales.ts";
 import { intervalChoices, intervalPool } from "./identify.ts";
 import {
-  arpThenChord, article, barBeatsOf, cap, choice, durationTokens, durationWords, ev, fillBar, int, joinAnd, kbRange, melodic, midiLabel, pList, pNum, pRange, pStr, pick, plural, rhythmSound, shuffle, sound,
-  aStep, uniq, vocabOf, window5, type Generator,
+  arpThenChord, article, cap, choice, durationTokens, durationWords, ev, fillBar, int, joinAnd, kbRange, melodic, midiLabel, pBool, pList, pNum, pRange, pStr, pick, plural, rhythmSound, shuffle, sound,
+  aStep, sayNote, spellPair, uniq, vocabOf, window5, type Generator,
 } from "./util.ts";
 
 const TIMBRES: Timbre[] = ["sine", "triangle", "square", "saw", "piano", "guitar"];
@@ -20,7 +20,10 @@ export const earHigherLower: Generator = (p, rng) => {
   const timbre = timbreOf(pStr(p, "timbre", "piano"), "piano");
   const gap = int(rng, min, max);
   const up = rng() < 0.5;
-  const first = int(rng, 55, 72);
+  // A pure tone below about 200 Hz is faint on small speakers: with a sine or
+  // triangle wave neither note goes under G3.
+  const thin = timbre === "sine" || timbre === "triangle";
+  const first = int(rng, thin && !up ? 55 + gap : 55, thin && !up ? Math.max(72, 55 + gap) : 72);
   const second = first + (up ? gap : -gap);
   return {
     prompt: "Listen to the two notes. Is the second one higher or lower than the first?",
@@ -47,16 +50,21 @@ export const earInterval: Generator = (p, rng) => {
   const lo = int(rng, 55, 67);
   const midis = [lo, lo + semis];
   const said = labels === "steps" ? aStep(semis) : `${article(intervalName(iv))} ${intervalName(iv)}`;
+  // Named as the interval spells them (a minor third above C is E♭); counted
+  // in steps there is no spelling to honour, and a black key gets both names.
+  const [loP, hiP] = spellPair(lo, iv);
+  const name = (m: number, p: Pitch, octave: boolean) => (labels === "steps" && isBlackKey(m) ? pcBothLabels(m) : octave ? pitchLabel(p) : pcLabel(p));
   return {
-    prompt: labels === "steps" ? "Listen. How far apart are the two notes?" : "Listen. Which interval is this?",
+    // "Interval" is a Level 3 word: below `full` the question does not use it.
+    prompt: labels === "steps" ? "Listen. How far apart are the two notes?" : vocabOf(p) !== "full" ? "Listen to the two notes. Which of these do you hear?" : "Listen. Which interval is this?",
     stimuli: [{ type: "sound", sound: harmonic ? sound([ev(midis, 0, 2)]) : melodic(midis), autoplay: true }],
     response: { type: "choice", choices: intervalChoices(rng, pool, iv, labels) },
     expected: { type: "choice", id: iv },
     explain:
       vocabOf(p) === "full"
-        ? `That was ${said}: ${midiLabel(midis[0])} and ${midiLabel(midis[1])}, ${plural(semis, "half step")} apart.`
+        ? `That was ${said}: ${name(midis[0], loP, true)} and ${name(midis[1], hiP, true)}, ${plural(semis, "half step")} apart.`
         : vocabOf(p) === "names"
-          ? `That was ${said}: ${pcLabel(fromMidi(midis[0]))} and ${pcLabel(fromMidi(midis[1]))}, ${plural(semis, "half step")} apart.`
+          ? `That was ${said}: ${name(midis[0], loP, false)} and ${name(midis[1], hiP, false)}, ${plural(semis, "half step")} apart.`
           : `That was ${said}.`,
     reveal: sound([ev([midis[0]], 0, 1), ev([midis[1]], 1, 1), ev(midis, 2, 2)]),
   };
@@ -182,14 +190,14 @@ function heard(tokens: string[]): string {
 
 export const earRhythm: Generator = (p, rng) => {
   const time = pStr(p, "time", "4/4");
-  const bar = barBeatsOf(time);
   const values = durationTokens(pList(p, "values", ["h", "q", "e"]));
   const tempo = Math.max(30, Math.min(240, pNum(p, "tempo", 80)));
-  const answer = fillBar(rng, values, bar);
+  const syncopation = pBool(p, "syncopation", false);
+  const answer = fillBar(rng, values, time, { syncopation });
   const bars = [answer];
   const wide = uniq([...values, "h", "q", "e"]);
   for (let tries = 0; tries < 80 && bars.length < 3; tries++) {
-    const cand = fillBar(rng, tries < 40 ? values : wide, bar);
+    const cand = fillBar(rng, tries < 40 ? values : wide, time, { syncopation });
     if (!bars.some((b) => heard(b) === heard(cand))) bars.push(cand);
   }
   // A bar with only one possible rhythm (one sixteenth in 1/16): the only
@@ -241,20 +249,30 @@ export const earFindNote: Generator = (p, rng) => {
   const timbre: Timbre = guitar ? "guitar" : "piano";
   const gap = Math.abs(target - ref);
   const vocab = vocabOf(p);
-  const say = (m: number) => (vocab === "full" ? midiLabel(m) : pcLabel(fromMidi(m)));
+  // Spelled as the scale spells them: the third of C natural minor is E♭.
+  const spelledByPc = new Map(scaleNotes("C4", type).map((n) => [pc(toMidi(n)), n] as const));
+  const pitchOf = (m: number): Pitch => {
+    const n = spelledByPc.get(pc(m)) ?? fromMidi(m);
+    return { letter: n.letter, acc: n.acc, oct: Math.floor((m - n.acc) / 12) - 1 };
+  };
+  const where = (m: number) => (guitar ? positionsOf(m, 12)[0] : undefined);
+  // Below `letters` no note is named at all; at `letters` a black key is
+  // described by where it is.
+  const say = (m: number) => sayNote(pitchOf(m), vocab, where(m));
+  const refSaid = vocab === "plain" ? "the marked note" : say(ref);
   const plainDist = gap === 0 ? "the same note" : `${gap === 12 ? "an octave " : vocab === "names" ? `${plural(gap, "half step")} ` : ""}${target > ref ? "above" : "below"} it`;
   const dist = vocab !== "full" ? plainDist : gap === 0 ? "the same note" : gap <= 12 ? `${article(intervalName(intervalOfSemitones(gap)))} ${intervalName(intervalOfSemitones(gap))} ${target > ref ? "above" : "below"} it` : `${plural(gap, "half step")} ${target > ref ? "above" : "below"} it`;
   return {
-    prompt: `You will hear ${say(ref)} (marked), then a second note. Find the second note on the ${guitar ? "fretboard" : "keyboard"}.`,
+    prompt: `You will hear ${vocab === "plain" ? "the marked note" : `${refSaid} (marked)`}, then a second note. Find the second note on the ${guitar ? "fretboard" : "keyboard"}.`,
     stimuli: [
-      { type: "text", text: `Starts on ${say(ref)}` },
+      { type: "text", text: vocab === "plain" ? "Starts on the marked note" : `Starts on ${refSaid}` },
       { type: "sound", sound: sound([ev([ref], 0, 1.5), ev([target], 2, 1.5)], timbre), autoplay: true },
     ],
     response: guitar
       ? { type: "fretboard", maxFret: 12, mode: "single", labels: "none", marked: positionsOf(ref, 12).slice(0, 1) }
       : { type: "keyboard", range: kbRange(range[0], range[1]), mode: "single", labels: "none", marked: [ref] },
     expected: { type: "notes", midis: [target], match: "exact", ordered: false },
-    explain: `The second note was ${say(target)}, ${dist}.`,
+    explain: vocab === "plain" ? `The second note was ${dist === "the same note" ? dist : dist.replace(/ it$/, " the marked note")}.` : `The second note was ${say(target)}, ${dist}.`,
     reveal: sound([ev([ref], 0, 1), ev([target], 1, 2)], timbre),
   };
 };

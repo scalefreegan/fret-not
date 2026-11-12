@@ -240,14 +240,21 @@ export function IntervalWidget({ params }: WidgetProps) {
   const ratio = JUST_RATIOS[text];
   // Before qualities are taught: the number alone ("third"), nothing that
   // tells a major third from a minor one.
-  const numbersOnly = str(params, "labels", "names") === "numbers";
+  const labelMode = str(params, "labels", "names");
+  const numbersOnly = labelMode === "numbers";
+  // Before intervals have names at all: only how far apart, in steps.
+  const stepsOnly = labelMode === "steps";
   if (numbersOnly) name = lo === hi ? "unison" : numberNameBetween(from, to);
+  const halves = Math.abs(hi - lo);
+  const wholes = halves / 2;
+  const stepsText = halves === 0 ? "the same note" : halves === 1 ? "1 half step" : `${halves} half steps`;
+  if (stepsOnly) name = stepsText;
   const pick = (midi: number, spelled?: Pitch) => {
     if (midi === lo) return;
     let p = spelled ?? fromMidi(midi);
     // From the keyboard there is no spelling: use the one the interval's usual name implies.
     if (!spelled && midi > lo && midi - lo <= 12) p = transpose(from, intervalOfSemitones(midi - lo));
-    if (!spelled && numbersOnly && !isBlackKey(midi)) p = fromMidi(midi); // a white key is its own letter: the count stays honest
+    if (!spelled && (numbersOnly || stepsOnly) && !isBlackKey(midi)) p = fromMidi(midi); // a white key is its own letter: the count stays honest
     playNote(lo, { timbre: "piano" });
     playNote(midi, { timbre: "piano", delay: 0.45 });
     setTo(p);
@@ -255,7 +262,7 @@ export function IntervalWidget({ params }: WidgetProps) {
   const timbre: Timbre = guitarOnly(views) ? "guitar" : "piano";
   return (
     <WidgetFrame
-      title={<span className="capitalize">{name}</span>}
+      title={<span className={stepsOnly ? undefined : "capitalize"}>{stepsOnly ? `${name[0].toUpperCase()}${name.slice(1)} apart` : name}</span>}
       hint={interactive ? `${word.Press} another note to move the upper one` : undefined}
       controls={
         <>
@@ -266,7 +273,9 @@ export function IntervalWidget({ params }: WidgetProps) {
     >
       <div className="mb-3 flex flex-wrap items-center gap-x-5 gap-y-1 text-sm text-fg-2">
         <span className="flex items-center gap-1.5"><NoteChip midi={lo}>{pcLabel(from)}</NoteChip>→<NoteChip midi={hi}>{pcLabel(to)}</NoteChip></span>
-        {numbersOnly ? (
+        {stepsOnly ? (
+          <span><strong className="text-fg">{stepsText}</strong>{halves >= 2 && <> ({Number.isInteger(wholes) ? `${wholes} whole step${wholes === 1 ? "" : "s"}` : `${Math.floor(wholes)} whole step${Math.floor(wholes) === 1 ? "" : "s"} and a half step`})</>} apart: count every key or fret from one note to the other</span>
+        ) : numbersOnly ? (
           <span>count the letter names, both ends included: <strong className="text-fg">{name}</strong></span>
         ) : (
           <>
@@ -284,6 +293,20 @@ export function IntervalWidget({ params }: WidgetProps) {
 // --- scale -----------------------------------------------------------------
 
 const TONICS = ["C", "Db", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B"];
+// A scale or chord with a minor third is spelled from the sharp side where
+// the flat spelling would need double flats (D♭ minor has a B𝄫; C♯ minor is
+// the key musicians actually use).
+const MINOR_TONICS = ["C", "C#", "D", "Eb", "E", "F", "F#", "G", "G#", "A", "Bb", "B"];
+const tonicsFor = (intervals: readonly string[]): string[] => (intervals.includes("m3") ? MINOR_TONICS : TONICS);
+/** The same pitch as `tonic`, spelled as this list spells it. */
+const respell = (tonic: string, list: string[]): string => {
+  try {
+    const want = pcOfClass(parsePitchClass(tonic));
+    return list.find((t) => pcOfClass(parsePitchClass(t)) === want) ?? tonic;
+  } catch {
+    return tonic;
+  }
+};
 const SCALE_CHOICES = ["major", "natural-minor", "major-pentatonic", "minor-pentatonic", "blues", "harmonic-minor", "dorian", "mixolydian"];
 
 /** Scale notes in a comfortable octave: around middle C for staff and keys,
@@ -315,6 +338,13 @@ export function ScaleWidget({ params }: WidgetProps) {
   const notes = useMemo(() => scaleFor(tonic, type, guitar), [tonic, type, guitar]);
   const midis = notes.map(toMidi);
   const steps = stepPattern(type);
+  const tonics = tonicsFor(SCALES[type].intervals);
+  // Choosing another kind of scale keeps the starting pitch and respells it
+  // for that kind (D♭ major ↔ C♯ minor).
+  const pickType = (t: string) => {
+    setType(t);
+    setTonic((cur) => respell(cur, tonicsFor(SCALES[t].intervals)));
+  };
   const [active, setActive] = useState<number | null>(null);
   const holder = useRef<Playback | null>(null);
   const stop = () => {
@@ -348,11 +378,11 @@ export function ScaleWidget({ params }: WidgetProps) {
             <>
               <label className="flex items-center gap-1.5 text-sm text-fg-2">Start on
                 <select value={tonic} onChange={(e) => setTonic(e.target.value)} className="rounded-md border border-line bg-panel px-1.5 py-1 text-fg pointer-coarse:px-2.5 pointer-coarse:py-2 pointer-coarse:text-base">
-                  {(TONICS.includes(tonic) ? TONICS : [tonic, ...TONICS]).map((t) => <option key={t} value={t}>{pcLabel(parsePitchClass(t))}</option>)}
+                  {(tonics.includes(tonic) ? tonics : [tonic, ...tonics]).map((t) => <option key={t} value={t}>{pcLabel(parsePitchClass(t))}</option>)}
                 </select>
               </label>
               <label className="flex items-center gap-1.5 text-sm text-fg-2">Scale
-                <select value={type} onChange={(e) => setType(e.target.value)} className="rounded-md border border-line bg-panel px-1.5 py-1 text-fg pointer-coarse:px-2.5 pointer-coarse:py-2 pointer-coarse:text-base">
+                <select value={type} onChange={(e) => pickType(e.target.value)} className="rounded-md border border-line bg-panel px-1.5 py-1 text-fg pointer-coarse:px-2.5 pointer-coarse:py-2 pointer-coarse:text-base">
                   {(SCALE_CHOICES.includes(type) ? SCALE_CHOICES : [type, ...SCALE_CHOICES]).map((t) => <option key={t} value={t}>{SCALES[t].name}</option>)}
                 </select>
               </label>
@@ -418,7 +448,8 @@ export function ChordWidget({ params }: WidgetProps) {
   const sound = () => (guitar ? playChord(strumMidis(symbol), { timbre: "guitar", strum: 0.045, duration: 2.2 }) : playChord(pianoVoicing(symbol), { timbre: "piano", duration: 1.8 }));
   const arpeggio = () => (guitar ? strumMidis(symbol) : pianoVoicing(symbol)).forEach((m, i) => playNote(m, { timbre: guitar ? "guitar" : "piano", delay: i * 0.38 }));
   const rootName = `${ref.root.letter}${ref.root.acc > 0 ? "#" : ref.root.acc < 0 ? "b" : ""}`;
-  const set = (root: string, type: string) => setSymbol(root + CHORDS[type].suffix);
+  const roots = tonicsFor(def.intervals);
+  const set = (root: string, type: string) => setSymbol(respell(root, tonicsFor(CHORDS[type].intervals)) + CHORDS[type].suffix);
   const parts: ReactNode[] = notes.map((n, i) => {
     const gap = i === 0 ? null : semitones(def.intervals[i]) - semitones(def.intervals[i - 1]);
     return (
@@ -441,8 +472,8 @@ export function ChordWidget({ params }: WidgetProps) {
           {interactive && (
             <>
               <label className="flex items-center gap-1.5 text-sm text-fg-2">Root
-                <select value={TONICS.includes(rootName) ? rootName : rootName} onChange={(e) => set(e.target.value, ref.type)} className="rounded-md border border-line bg-panel px-1.5 py-1 text-fg pointer-coarse:px-2.5 pointer-coarse:py-2 pointer-coarse:text-base">
-                  {(TONICS.includes(rootName) ? TONICS : [rootName, ...TONICS]).map((t) => <option key={t} value={t}>{pcLabel(parsePitchClass(t))}</option>)}
+                <select value={rootName} onChange={(e) => set(e.target.value, ref.type)} className="rounded-md border border-line bg-panel px-1.5 py-1 text-fg pointer-coarse:px-2.5 pointer-coarse:py-2 pointer-coarse:text-base">
+                  {(roots.includes(rootName) ? roots : [rootName, ...roots]).map((t) => <option key={t} value={t}>{pcLabel(parsePitchClass(t))}</option>)}
                 </select>
               </label>
               <Segmented label="Chord type" value={ref.type} onChange={(t) => set(rootName, t)} options={(CHORD_TYPE_CHOICES.includes(ref.type) ? CHORD_TYPE_CHOICES : [ref.type, ...CHORD_TYPE_CHOICES]).map((t) => ({ value: t, label: CHORDS[t].name.replace("dominant ", "").replace("suspended fourth", "sus4") }))} />

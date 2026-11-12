@@ -54,7 +54,7 @@ Each line of that example fills the same amount of time: one whole note, two hal
 
 ## Mixing them
 
-Real rhythms mix the shapes. Play this one, then press tap-along and tap it on the space bar. A long note gets one tap: you tap when it *starts* and wait while it lasts.
+Real rhythms mix the shapes. Play this one, then press tap-along and tap it (space bar, or the tap pad on a touch screen). A long note gets one tap: you tap when it *starts* and wait while it lasts.
 
 ```widget
 type: rhythm

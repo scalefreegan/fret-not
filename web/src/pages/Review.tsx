@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Content, ExerciseDecl } from "../../shared/content.ts";
 import { reviewQuestions } from "../../shared/exercises.ts";
-import { dueConcepts, isMastered, reviewableConcepts } from "../../shared/progress.ts";
+import { dueConcepts, isMastered, placementConcepts, reviewableConcepts } from "../../shared/progress.ts";
 import { ExerciseRunner, type Answered } from "../exercises/Runner.tsx";
 import { go } from "../router.ts";
 import { useAnswerSaver, useAppData } from "../app-data.ts";
@@ -131,7 +131,7 @@ const PER_LEVEL = 8;
 /** Placement: a short quiz per level, starting at 0. Pass one and the next
  *  is offered; the first level not passed is where the path starts. */
 export function PlacementPage() {
-  const { content, place } = useAppData();
+  const { content, progress, place } = useAppData();
   const [level, setLevel] = useState(0);
   const [stage, setStage] = useState<"intro" | "quiz" | "passed" | "saving" | "failed" | "placed">("intro");
   /** The level a failed save was for, and why it failed, so it can be retried. */
@@ -142,9 +142,13 @@ export function PlacementPage() {
   const written = useMemo(() => (content ? content.levels.filter((l) => l.status === "written").map((l) => l.id) : []), [content]);
   // One exercise per concept of the level; tapping needs a warm-up, so it is
   // left out. Stable by value, so a content reload does not restart the quiz.
+  // Only the tracks this learner follows are asked (the level gate's own
+  // rule): a piano-only learner is not failed on guitar-only questions. The
+  // tracks are decided when the check starts, not re-decided as it goes.
+  const [startProgress] = useState(progress);
   const decls = useStable(
     content
-      ? content.concepts.filter((c) => c.level === level).flatMap((c) => declsFor(content, c.id).filter((d) => d.kind !== "tap-rhythm").slice(0, 1))
+      ? placementConcepts(content, startProgress, level, seed).flatMap((id) => declsFor(content, id).filter((d) => d.kind !== "tap-rhythm").slice(0, 1))
       : [],
   );
   const { value: questions, stale } = useFrozen(`${level}`, decls, (d) => reviewQuestions(d, 1, seed + level).slice(0, PER_LEVEL));

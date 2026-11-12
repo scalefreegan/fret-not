@@ -37,7 +37,9 @@ function matches(query: string): boolean {
 
 function readOpen(): boolean {
   try {
-    return window.localStorage.getItem(OPEN_KEY) === "1" && !matches(PHONE);
+    // Only the column beside the page is restored open. Anything that lies
+    // over the page is a modal, and a fresh page load must not start in one.
+    return window.localStorage.getItem(OPEN_KEY) === "1" && !matches(OVERLAY);
   } catch {
     return false;
   }
@@ -116,9 +118,11 @@ export function TutorDrawer({ context, onContentChanged }: { context: TutorConte
     return () => window.clearTimeout(t);
   }, [open]);
 
-  // As a full-screen sheet it is a modal dialog: the page underneath is
-  // taken out of the tab order and away from assistive technology.
-  const modal = open && phone;
+  // Wherever it lies over the page (the phone sheet, the tablet drawer) it
+  // is a modal dialog: the page underneath is taken out of the tab order and
+  // away from assistive technology, Tab stays inside, and Escape closes it
+  // wherever the focus is.
+  const modal = open && (phone || overlay);
   useEffect(() => {
     const page = document.getElementById("app-page");
     if (!page || !modal) return;
@@ -130,6 +134,30 @@ export function TutorDrawer({ context, onContentChanged }: { context: TutorConte
     moved.current = true;
     setOpen(false);
   };
+  useEffect(() => {
+    if (!modal) return;
+    const on = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        moved.current = true;
+        setOpen(false);
+        return;
+      }
+      if (e.key !== "Tab" || !panel.current) return;
+      const stops = [...panel.current.querySelectorAll<HTMLElement>("button, select, textarea, input, a[href], [tabindex]:not([tabindex='-1'])")].filter((el) => !el.hasAttribute("disabled") && el.offsetParent !== null);
+      if (stops.length === 0) return;
+      const first = stops[0];
+      const last = stops[stops.length - 1];
+      const at = document.activeElement as HTMLElement | null;
+      const inside = !!at && panel.current.contains(at) && at !== panel.current;
+      if (e.shiftKey ? !inside || at === first : !inside || at === last) {
+        e.preventDefault();
+        (e.shiftKey ? last : first).focus();
+      }
+    };
+    window.addEventListener("keydown", on, true);
+    return () => window.removeEventListener("keydown", on, true);
+  }, [modal]);
 
   return (
     <>
@@ -155,6 +183,7 @@ export function TutorDrawer({ context, onContentChanged }: { context: TutorConte
           Tutor
         </button>
       )}
+      {modal && !phone && <div aria-hidden="true" className="fixed inset-0 z-30 bg-ebony/40" onClick={close} />}
       <aside
         ref={panel}
         id="tutor-drawer"
@@ -185,7 +214,7 @@ export function TutorDrawer({ context, onContentChanged }: { context: TutorConte
           open ? "flex" : "hidden",
         )}
       >
-        <header className="flex h-12 shrink-0 items-center gap-3 border-b border-line px-4">
+        <header className="flex h-12 shrink-0 items-center gap-3 border-b border-line px-4 short:h-10">
           <h2 className="font-display text-base font-semibold text-fg">Tutor</h2>
           <span className="min-w-0 flex-1 truncate text-xs text-fg-3">{contextLine(context)}</span>
           <Button variant="ghost" size="sm" aria-label="Close the tutor" className="min-w-9 shrink-0 px-2 text-xl leading-none" onClick={close}>

@@ -1,8 +1,8 @@
-import { CHORDS, chordSymbol, isChordSymbol, isChordType, parseChord, romanToChord } from "./music/chords.ts";
-import { fretMidi, GUITAR_FRETS, GUITAR_SHAPES, isFretPos, positionsOf } from "./music/instruments.ts";
+import { CHORDS, chordNotes, chordSymbol, isChordSymbol, isChordType, parseChord, romanToChord } from "./music/chords.ts";
+import { fretMidi, GUITAR_FRETS, GUITAR_SHAPES, isFretPos, PIANO_RANGE, positionsOf } from "./music/instruments.ts";
 import { isInterval, parseInterval, semitones } from "./music/intervals.ts";
-import { isPitch, isPitchClass, midiOf, parsePitchClass, pc, pcName, toMidi } from "./music/notes.ts";
-import { isDuration, isTime, parseMelody, parseRhythm, parseTab } from "./music/rhythm.ts";
+import { isBlackKey, isPitch, isPitchClass, midiOf, parsePitchClass, pc, pcName, toMidi } from "./music/notes.ts";
+import { canFillBar, isDuration, isTime, maxTapTempo, MIN_TAP_WINDOW_SECONDS, parseDuration, parseMelody, parseRhythm, parseTab, tapWindowSeconds } from "./music/rhythm.ts";
 import { isKey, isScaleType, scaleNotes } from "./music/scales.ts";
 
 // The catalogue of widgets a lesson may embed and exercise kinds it may
@@ -156,7 +156,7 @@ export const WIDGETS: Record<string, { doc: string; params: ParamSpecs }> = {
       to: { type: "pitch", required: true, doc: "Upper note." },
       interactive: { type: "boolean", doc: "Let the learner move the upper note. Default true." },
       views: { type: `enum[]:${VIEWS}`, doc: "Default [staff, keyboard]." },
-      labels: { type: "enum:names|numbers", doc: "`numbers` shows only the interval's number (\"Third\", \"Fifth\"), with no quality, half-step count or ratio: for lessons before qualities are taught. Default names." },
+      labels: { type: "enum:names|numbers|steps", doc: "`numbers` shows only the interval's number (\"Third\", \"Fifth\"), with no quality, half-step count or ratio: for lessons before qualities are taught. `steps` shows only the distance in half steps and whole steps, with no interval name, number or ratio: for lessons before intervals are named. Default names." },
     },
   },
   scale: {
@@ -288,6 +288,7 @@ export const EXERCISES: Record<string, { doc: string; group: "identify" | "ear" 
       types: { type: "chordtype[]", doc: "e.g. [maj, min]." },
       roots: { type: "pitchclass[]", doc: "e.g. [C, F, G]." },
       qualityOnly: { type: "boolean", doc: "Ask only major or minor (etc.), not the root. Default false." },
+      answers: { type: "enum:names|symbols", doc: "How the answers are written: `names` (\"D minor\") or `symbols` (\"Dm\"), for the lesson that teaches chord symbols. Default names." },
     },
   },
   "name-key": {
@@ -312,7 +313,8 @@ export const EXERCISES: Record<string, { doc: string; group: "identify" | "ear" 
     doc: "A bar with one note missing is shown; choose the note value that completes it.",
     params: {
       time: { type: "time", doc: "Default 4/4." },
-      values: { type: "duration[]", required: true, doc: "Note values used." },
+      values: { type: "duration[]", required: true, doc: "Note values used. They must be able to fill one bar of `time` with at least two notes or rests." },
+      syncopation: { type: "boolean", doc: "Allow notes longer than an eighth to start off the beat. Default false: every note starts on a beat or on a clean division of it, as in the lessons before syncopation is taught." },
     },
   },
   "harmonic-frequency": {
@@ -368,8 +370,9 @@ export const EXERCISES: Record<string, { doc: string; group: "identify" | "ear" 
     doc: "A one-bar rhythm plays; pick the notation that matches it from three.",
     params: {
       time: { type: "time", doc: "Default 4/4." },
-      values: { type: "duration[]", required: true, doc: "Note values used." },
+      values: { type: "duration[]", required: true, doc: "Note values used. They must be able to fill one bar of `time`." },
       tempo: { type: "number", min: 30, max: 240, doc: "Default 80." },
+      syncopation: { type: "boolean", doc: "Allow notes longer than an eighth to start off the beat. Default false: every note starts on a beat or on a clean division of it, as in the lessons before syncopation is taught." },
     },
   },
   "ear-find-note": {
@@ -405,21 +408,23 @@ export const EXERCISES: Record<string, { doc: string; group: "identify" | "ear" 
   },
   "play-chord": {
     group: "play",
-    doc: "A chord symbol is shown (with `show: diagram`, its chord box too); press its notes (piano) or fret its shape (guitar), then check.",
+    doc: "A chord symbol is shown (with `show: diagram`, its chord box too); press its notes (piano) or fret its shape (guitar), then check. On the guitar any shape a hand can reach counts if it sounds only the chord's notes with the root lowest.",
     params: {
       instrument: { type: `enum:${INSTRUMENTS}`, required: true, doc: "Which instrument answers." },
       chords: { type: "chord[]", required: true, doc: "Chords drawn from." },
-      show: { type: "enum:name|diagram", doc: "`diagram` also shows the guitar chord box, so the task is copying it onto the neck (guitar only; every chord needs a stored shape). Default name." },
+      show: { type: "enum:name|diagram", doc: "`diagram` also shows the guitar chord box, so the task is copying it onto the neck exactly: every string it plays, none it mutes (guitar only; every chord needs a stored shape). Default name." },
+      ask: { type: "enum:name|symbol", doc: "`symbol` shows only the chord symbol and does not spell it out in words (\"Dm\", not \"D minor (Dm)\"), for the lesson that teaches reading symbols. Default name." },
     },
   },
   "tap-rhythm": {
     group: "play",
-    doc: "A one- or two-bar rhythm is shown; after a count-in, tap it on the space bar in time.",
+    doc: "A one- or two-bar rhythm is shown; after a count-in, tap it in time (space bar, or the tap pad on a touch screen).",
     params: {
       time: { type: "time", doc: "Default 4/4." },
-      values: { type: "duration[]", required: true, doc: "Note values used." },
+      values: { type: "duration[]", required: true, doc: "Note values used. They must be able to fill one bar of `time`." },
       bars: { type: "number", min: 1, max: 2, integer: true, doc: "1 or 2. Default 1." },
-      tempo: { type: "number", min: 30, max: 240, doc: "Default 72." },
+      tempo: { type: "number", min: 30, max: 240, doc: "Default 72. Not so fast that the shortest of `values` cannot be tapped: at most 84 with sixteenths, 168 with eighths." },
+      syncopation: { type: "boolean", doc: "Allow notes longer than an eighth to start off the beat. Default false: every note starts on a beat or on a clean division of it, as in the lessons before syncopation is taught." },
     },
   },
 
@@ -587,6 +592,8 @@ function intervalDrillProblems(p: Record<string, unknown>): string[] {
   const ivs = p.intervals.filter(isInterval);
   const out: string[] = [];
   if (ivs.some((iv) => parseInterval(iv).num === 1)) out.push("`intervals` may not include a unison (P1): there is no second note to name or play");
+  const flat = ivs.filter((iv) => parseInterval(iv).num !== 1 && semitones(iv) < 1);
+  if (flat.length) out.push(`\`intervals\` ${flat.join(", ")} ${flat.length === 1 ? "is" : "are"} no half steps wide: both notes would be the same key or fret`);
   const wide = ivs.filter((iv) => semitones(iv) > MAX_DRILL_SEMITONES);
   if (wide.length) out.push(`\`intervals\` ${wide.join(", ")} ${wide.length === 1 ? "is" : "are"} wider than two octaves, more than the instruments shown can hold`);
   return out;
@@ -607,12 +614,55 @@ function shapeProblems(p: Record<string, unknown>, why: string): string[] {
 /** A guitar question draws its note from `strings` × frets 0–`maxFret`; a
  *  `range` that none of those places can play would be silently ignored. */
 function guitarRangeProblems(p: Record<string, unknown>): string[] {
-  if (!Array.isArray(p.range) || p.range.length !== 2 || !p.range.every(isPitch)) return [];
-  const [lo, hi] = (p.range as string[]).map(midiOf);
+  const ranged = Array.isArray(p.range) && p.range.length === 2 && p.range.every(isPitch);
+  const [lo, hi] = ranged ? (p.range as string[]).map(midiOf) : [-Infinity, Infinity];
   const strings = Array.isArray(p.strings) && p.strings.length ? (p.strings as number[]) : [1, 2, 3, 4, 5, 6];
   const top = typeof p.maxFret === "number" ? p.maxFret : 5;
-  for (const string of strings) for (let fret = 0; fret <= top; fret++) if (fretMidi({ string, fret }) >= lo && fretMidi({ string, fret }) <= hi) return [];
-  return [`\`range\` holds no note that ${strings.length === 6 ? "the guitar" : `string${strings.length === 1 ? "" : "s"} ${strings.join(", ")}`} can play up to fret ${top}`];
+  const where = `${strings.length === 6 ? "the guitar" : `string${strings.length === 1 ? "" : "s"} ${strings.join(", ")}`} can play up to fret ${top}`;
+  let any = false;
+  for (const string of strings) {
+    for (let fret = 0; fret <= top; fret++) {
+      const m = fretMidi({ string, fret });
+      if (m < lo || m > hi) continue;
+      any = true;
+      if (p.accidentals === true || !isBlackKey(m)) return [];
+    }
+  }
+  if (!any) return [`\`range\` holds no note that ${where}`];
+  return [`\`range\` holds only sharps and flats that ${where}; widen it or set \`accidentals: true\``];
+}
+/** How far from the staff a note may be asked: three ledger lines. */
+const STAFF_LIMITS: Record<string, [string, string]> = { treble: ["F3", "E6"], bass: ["A1", "G4"] };
+/** A `range` for notes on a staff or a piano keyboard: on the instrument,
+ *  readable on the clef, and holding a note the declaration can ask. */
+function pianoRangeProblems(p: Record<string, unknown>, staff: boolean): string[] {
+  if (!Array.isArray(p.range) || p.range.length !== 2 || !p.range.every(isPitch)) return [];
+  const [lo, hi] = (p.range as string[]).map(midiOf);
+  const out: string[] = [];
+  if (staff) {
+    const clef = p.clef === "bass" ? "bass" : "treble";
+    const [a, b] = STAFF_LIMITS[clef];
+    if (lo < midiOf(a) || hi > midiOf(b)) out.push(`\`range\` must stay within ${a}–${b} on the ${clef} clef (three ledger lines either side of the staff)`);
+  } else if (lo < PIANO_RANGE[0] || hi > PIANO_RANGE[1]) out.push("`range` must stay on the piano: A0–C8");
+  if (p.accidentals !== true) {
+    let natural = false;
+    for (let m = lo; m <= hi; m++) if (!isBlackKey(m)) natural = true;
+    if (!natural) out.push("`range` holds only a black key; widen it or set `accidentals: true`");
+  }
+  return out;
+}
+/** Rhythm drills: the note values must be able to fill a bar as the
+ *  generator fills it, or it would quietly bring in values the lesson never
+ *  listed. */
+function rhythmProblems(p: Record<string, unknown>, minEvents: number): string[] {
+  if (!Array.isArray(p.values)) return [];
+  const values = p.values.filter(isDuration);
+  const time = isTime(p.time) ? p.time : "4/4";
+  const aligned = p.syncopation !== true;
+  if (canFillBar(values, time, minEvents, aligned)) return [];
+  const need = minEvents > 1 ? `one bar of ${time} with at least ${minEvents} notes or rests` : `one bar of ${time}`;
+  if (aligned && canFillBar(values, time, minEvents, false)) return [`\`values\` ${values.join(", ")} can fill ${need} only with a long note starting off the beat; add a value that fits, or set \`syncopation: true\``];
+  return [`\`values\` ${values.join(", ")} cannot fill ${need}${values.every((v) => parseDuration(v).rest) ? " with at least one note (they are all rests)" : ""}`];
 }
 
 CROSS_CHECKS.set(WIDGETS.progression.params, (p) => {
@@ -641,16 +691,36 @@ CROSS_CHECKS.set(WIDGETS["frequency-explorer"].params, (p) => {
 });
 CROSS_CHECKS.set(EXERCISES["ear-higher-lower"].params, (p) => (typeof p.minSemitones === "number" && p.minSemitones > (typeof p.maxSemitones === "number" ? p.maxSemitones : 12) ? ["`minSemitones` must not be above `maxSemitones`"] : []));
 CROSS_CHECKS.set(EXERCISES["build-interval"].params, intervalDrillProblems);
-CROSS_CHECKS.set(EXERCISES["name-chord"].params, (p) => (p.view === "diagram" ? shapeProblems(p, "`view: diagram`") : []));
+CROSS_CHECKS.set(EXERCISES["ear-interval"].params, intervalDrillProblems);
+CROSS_CHECKS.set(EXERCISES["name-chord"].params, (p) => {
+  if (p.view === "diagram") return shapeProblems(p, "`view: diagram`");
+  if (p.view !== "staff") return [];
+  // On the staff every note is spelled: a chord that needs a triple sharp or
+  // flat (B♯ augmented, F♭ diminished seventh) cannot be written.
+  const bad = declaredChords(p).filter((c) => chordNotes(c).some((n) => Math.abs(n.acc) > 2));
+  return bad.length ? [`${bad.join(", ")} cannot be written on the staff (${bad.length === 1 ? "it needs" : "they need"} a triple sharp or flat); use another spelling of the root`] : [];
+});
+CROSS_CHECKS.set(EXERCISES["count-bar"].params, (p) => rhythmProblems(p, 2));
+CROSS_CHECKS.set(EXERCISES["ear-rhythm"].params, (p) => rhythmProblems(p, 1));
+CROSS_CHECKS.set(EXERCISES["tap-rhythm"].params, (p) => {
+  const out = rhythmProblems(p, 1);
+  if (out.length || !Array.isArray(p.values)) return out;
+  const shortest = Math.min(...p.values.filter(isDuration).map((v) => parseDuration(v).beats));
+  const tempo = typeof p.tempo === "number" ? p.tempo : 72;
+  if (tapWindowSeconds(shortest, tempo) < MIN_TAP_WINDOW_SECONDS - 1e-9) out.push(`\`tempo\` ${tempo} is too fast to tap the shortest of \`values\`: the window either side of a note would be under ${MIN_TAP_WINDOW_SECONDS * 1000} ms. At most ${maxTapTempo(shortest)} with these values`);
+  return out;
+});
 CROSS_CHECKS.set(EXERCISES["play-chord"].params, (p) => {
   if (p.show !== "diagram") return [];
   return p.instrument === "guitar" ? shapeProblems(p, "`show: diagram`") : ["`show: diagram` is for `instrument: guitar` only"];
 });
 CROSS_CHECKS.set(EXERCISES["play-note"].params, (p) => {
-  if (p.instrument !== "guitar") return p.from === "tab" ? ["`from: tab` is for `instrument: guitar` only"] : [];
+  if (p.instrument !== "guitar") return [...(p.from === "tab" ? ["`from: tab` is for `instrument: guitar` only"] : []), ...pianoRangeProblems(p, p.from === "staff")];
+  // Guitar music is written on the treble clef (an octave up).
+  if (p.from === "staff" && p.clef === "bass") return ["`clef: bass` is not for `instrument: guitar`: guitar music is written on the treble clef"];
   return guitarRangeProblems(p);
 });
-CROSS_CHECKS.set(EXERCISES["name-note"].params, (p) => (p.view === "fretboard" || p.view === "tab" ? guitarRangeProblems(p) : []));
+CROSS_CHECKS.set(EXERCISES["name-note"].params, (p) => (p.view === "fretboard" || p.view === "tab" ? guitarRangeProblems(p) : pianoRangeProblems(p, p.view === "staff")));
 
 CROSS_CHECKS.set(EXERCISES["name-interval"].params, (p) => {
   const general = intervalDrillProblems(p);
@@ -669,6 +739,7 @@ CROSS_CHECKS.set(EXERCISES["ear-find-note"].params, (p) => {
   const scale = isScaleType(p.scale) ? p.scale : "major";
   const guitar = p.instrument === "guitar";
   const [a, b] = (p.range as string[]).map(midiOf).sort((x, y) => x - y);
+  if (!guitar && (a < PIANO_RANGE[0] || b > PIANO_RANGE[1])) return ["`range` must stay on the piano: A0–C8"];
   const pcs = new Set(scaleNotes("C4", scale).map((n) => pc(toMidi(n))));
   let n = 0;
   for (let m = a; m <= b; m++) if (pcs.has(pc(m)) && (!guitar || positionsOf(m, 12).length > 0)) n++;

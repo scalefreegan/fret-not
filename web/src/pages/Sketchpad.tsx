@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import type { Sound } from "../../shared/exercise-types.ts";
 import { chordLabel, chordSymbol, diatonicTriads } from "../../shared/music/chords.ts";
 import { pianoVoicing } from "../../shared/music/instruments.ts";
@@ -157,7 +157,32 @@ export function SketchpadPage() {
       chords: sketch.chords.map((r) => toTriads[fromTriads.findIndex((t) => t.roman === r)]?.roman ?? ""),
     });
   };
-  const setBars = (bars: number) => setSketch({ ...sketch, bars, notes: sketch.notes.filter((n) => n.start < bars * STEPS), chords: Array.from({ length: bars }, (_, i) => sketch.chords[i] ?? "") });
+  // Shortening only hides the later bars: their notes and chords are kept and
+  // come back when the sketch is made longer again.
+  const setBars = (bars: number) => setSketch({ ...sketch, bars, chords: Array.from({ length: Math.max(bars, sketch.chords.length) }, (_, i) => sketch.chords[i] ?? "") });
+  const hiddenNotes = sketch.notes.filter((n) => n.start >= sketch.bars * STEPS).length;
+  // The grid is one stop in the tab order; the arrow keys move within it.
+  const [cursor, setCursor] = useState({ row: 0, step: 0 });
+  const grid = useRef<HTMLDivElement | null>(null);
+  const onGridKey = (e: KeyboardEvent<HTMLDivElement>) => {
+    const t = e.target as HTMLElement;
+    if (t.dataset.step === undefined) return;
+    const row = Number(t.dataset.row);
+    const step = Number(t.dataset.step);
+    const to =
+      e.key === "ArrowRight" ? { row, step: step + 1 }
+      : e.key === "ArrowLeft" ? { row, step: step - 1 }
+      : e.key === "ArrowDown" ? { row: row + 1, step }
+      : e.key === "ArrowUp" ? { row: row - 1, step }
+      : e.key === "Home" ? { row, step: Math.floor(step / STEPS) * STEPS }
+      : e.key === "End" ? { row, step: Math.floor(step / STEPS) * STEPS + STEPS - 1 }
+      : null;
+    if (!to) return;
+    e.preventDefault();
+    const next = { row: Math.min(rows.length - 1, Math.max(0, to.row)), step: Math.min(sketch.bars * STEPS - 1, Math.max(0, to.step)) };
+    setCursor(next);
+    grid.current?.querySelector<HTMLElement>(`[data-row="${next.row}"][data-step="${next.step}"]`)?.focus();
+  };
   const clickCell = (step: number, midi: number) => {
     const existing = sketch.notes.find((n) => n.start === step && n.midi === midi);
     if (existing) return setSketch({ ...sketch, notes: sketch.notes.filter((n) => n !== existing) });
@@ -193,8 +218,8 @@ export function SketchpadPage() {
   // Finger-sized squares on a touch screen; the grid scrolls sideways in its
   // own box and the note names stay pinned to its left edge.
   const coarse = useCoarsePointer();
-  const cell = coarse ? 44 : 26;
-  const rowH = coarse ? 44 : 22;
+  const cell = coarse ? 44 : 28;
+  const rowH = coarse ? 44 : 26;
 
   return (
     <div className="mx-auto max-w-5xl px-4 pt-6 pb-24 sm:px-5 sm:pt-8">
@@ -209,6 +234,7 @@ export function SketchpadPage() {
           </select>
         </label>
         <Segmented label="Length of the sketch" value={String(sketch.bars)} onChange={(v) => setBars(Number(v))} options={[{ value: "2", label: "2 bars" }, { value: "4", label: "4 bars" }, { value: "8", label: "8 bars" }]} />
+        {hiddenNotes > 0 && <p role="status" className="order-last basis-full text-sm text-fg-3">{hiddenNotes === 1 ? "1 note" : `${hiddenNotes} notes`} in the later bars {hiddenNotes === 1 ? "is" : "are"} kept, not deleted: make the sketch longer to see {hiddenNotes === 1 ? "it" : "them"} again.</p>}
         <Slider className="min-w-48 flex-1" label="Tempo" value={sketch.tempo} min={50} max={180} onChange={(tempo) => setSketch({ ...sketch, tempo })} format={(v) => `${v} bpm`} />
       </Card>
 
@@ -233,7 +259,7 @@ export function SketchpadPage() {
                       aria-label={`Chord for bar ${bar + 1}`}
                       value={sketch.chords[bar] ?? ""}
                       onChange={(e) => {
-                        const chords = Array.from({ length: sketch.bars }, (_, i) => (i === bar ? e.target.value : (sketch.chords[i] ?? "")));
+                        const chords = Array.from({ length: Math.max(sketch.bars, sketch.chords.length) }, (_, i) => (i === bar ? e.target.value : (sketch.chords[i] ?? "")));
                         setSketch({ ...sketch, chords });
                         const picked = chordOf(e.target.value);
                         if (picked) playChord(pianoVoicing(chordSymbol(picked)), { timbre: "piano" });
@@ -249,12 +275,13 @@ export function SketchpadPage() {
               })}
             </div>
             {/* The grid. */}
-            {rows.map((p) => {
+            <div ref={grid} role="group" aria-label="Note grid: arrow keys move, Enter or Space places or removes a note" onKeyDown={onGridKey}>
+            {rows.map((p, rowIndex) => {
               const midi = toMidi(p);
               const isTonic = pc(midi) === tonicPc;
               return (
                 <div key={midi} className="flex items-center">
-                  <button type="button" onClick={() => playNote(midi, { timbre: "piano" })} className="sticky left-0 z-10 flex shrink-0 items-center justify-center rounded-l-md text-xs font-bold shadow-[4px_0_0_var(--panel)]" style={{ width: 40, height: rowH, background: pcColor(midi), color: "var(--pc-ink)", marginRight: 4 }}>
+                  <button type="button" tabIndex={-1} aria-label={`Hear ${pcLabel(p)}${p.oct}`} onClick={() => playNote(midi, { timbre: "piano" })} className="sticky left-0 z-10 flex shrink-0 items-center justify-center rounded-l-md text-xs font-bold shadow-[4px_0_0_var(--panel)]" style={{ width: 40, height: rowH, background: pcColor(midi), color: "var(--pc-ink)", marginRight: 4 }}>
                     {pcLabel(p)}{isTonic ? p.oct : ""}
                   </button>
                   {Array.from({ length: totalSteps }, (_, step) => {
@@ -266,9 +293,13 @@ export function SketchpadPage() {
                       <button
                         key={step}
                         type="button"
+                        data-row={rowIndex}
+                        data-step={step}
+                        tabIndex={rowIndex === Math.min(cursor.row, rows.length - 1) && step === Math.min(cursor.step, totalSteps - 1) ? 0 : -1}
+                        onFocus={() => setCursor({ row: rowIndex, step })}
                         aria-label={`${pcLabel(p)}${p.oct}, bar ${Math.floor(step / STEPS) + 1}, step ${(step % STEPS) + 1}${note ? " (note)" : ""}`}
                         onClick={() => (note && !isStart ? clickCell(note.start, midi) : clickCell(step, midi))}
-                        className={cx("shrink-0 touch-manipulation", !note && "hover:brightness-90 active:brightness-90")}
+                        className={cx("relative shrink-0 touch-manipulation focus-visible:z-10", !note && "hover:brightness-90 active:brightness-90")}
                         style={{
                           width: cell,
                           height: rowH,
@@ -286,6 +317,7 @@ export function SketchpadPage() {
                 </div>
               );
             })}
+            </div>
             <div className="mt-1 flex text-[0.68rem] text-fg-3" style={{ paddingLeft: 44 }}>
               {Array.from({ length: totalSteps }, (_, step) => (
                 <span key={step} style={{ width: cell, marginRight: step % STEPS === STEPS - 1 ? 6 : 0 }} className="text-center">{step % 2 === 0 ? step / 2 % 4 + 1 : "&"}</span>

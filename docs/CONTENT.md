@@ -189,6 +189,18 @@ One beat is a quarter note. When bar lines are written, every bar except the
 last must hold exactly what the time signature says, or the loader refuses the
 lesson.
 
+A time signature has 1 to 12 beats over 2, 4, 8 or 16. Rhythm drills
+(`tap-rhythm`, `ear-rhythm`, `count-bar`) build their bars from `values`, and
+the loader refuses values that cannot fill a bar. Unless `syncopation: true`,
+no note longer than an eighth starts off the beat, so `[q, e, q.]` gives the
+dotted quarter on a beat with its eighth after it. A `tap-rhythm` tempo may
+not be too fast for its shortest value to be tapped (at most 84 with
+sixteenths, 168 with eighths).
+
+Ranges are bounded too: a note asked on a staff stays within three ledger
+lines of it (treble F3–E6, bass A1–G4), a piano range stays on the piano, and
+a range must hold a natural note unless `accidentals: true`.
+
 Guitar chord boxes (`chord-diagram`, and `chord` with the `diagram` view) can
 only show chords with a stored shape: `C D E G A F B Am Dm Em Bm F#m A7 B7 C7 D7
 E7 G7 Am7 Dm7 Em7 Cmaj7 Fmaj7 Gmaj7 Dsus4 Asus4 E5 A5 G5`. New shapes go in

@@ -97,8 +97,14 @@ function StimulusView({ s, compact, guitar, click }: { s: Stimulus; compact?: bo
           <ChordBox symbol={s.chord} showName={false} size={compact || short ? 0.9 : 1.25} neutral ariaLabel="Chord diagram: strum" />
         </div>
       );
-    case "rhythm":
-      return <Score clef="rhythm" time={s.time} items={rhythmItems(parseRhythm(s.pattern, s.time), s.time, false)} space={compact || short ? 9 : 12} />;
+    case "rhythm": {
+      const events = parseRhythm(s.pattern, s.time);
+      // A fragment (one half note on its own) is not a bar: no time signature
+      // and no final barline, which together would claim it fills one.
+      const bars = totalBeats(events) / parseTime(s.time).barBeats;
+      const whole = Math.abs(bars - Math.round(bars)) < 1e-6 && bars > 0;
+      return <Score clef="rhythm" time={whole ? s.time : undefined} items={rhythmItems(events, s.time, false)} finalBar={whole} space={compact || short ? 9 : 12} />;
+    }
     case "sound":
       return <SoundStimulus sound={s.sound} autoplay={s.autoplay} click={click} />;
     case "text":
@@ -119,17 +125,22 @@ interface ResponseProps {
 function ChoiceResponse({ q, spec, result, submit }: ResponseProps & { spec: Extract<ResponseSpec, { type: "choice" }> }) {
   const expected = q.expected.type === "choice" ? q.expected.id : null;
   const chosen = result?.given.type === "choice" ? result.given.id : null;
+  const lettered = spec.choices.some((c) => /^\s*[\d½¼¾]/.test(c.label ?? ""));
   useEffect(() => {
     if (result) return;
     const on = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
-      const n = Number(e.key);
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      // The key is the badge drawn beside the choice: A, B, C … when the
+      // choices are themselves numbers (a "1" badge beside the answer "3"
+      // reads as a value), 1, 2, 3 … otherwise.
+      const n = lettered ? (e.key.length === 1 ? e.key.toLowerCase().charCodeAt(0) - 96 : 0) : Number(e.key);
       if (Number.isInteger(n) && n >= 1 && n <= spec.choices.length) submit({ type: "choice", id: spec.choices[n - 1].id });
     };
     window.addEventListener("keydown", on);
     return () => window.removeEventListener("keydown", on);
-  }, [result, spec, submit]);
+  }, [result, spec, submit, lettered]);
   const rich = spec.choices.some((c) => c.stimulus);
   return (
     <div className={cx("grid gap-2.5", rich ? "grid-cols-1 @xl:grid-cols-3" : spec.choices.length > 4 ? "grid-cols-2 @lg:grid-cols-4" : "grid-cols-1 @md:grid-cols-2")}>
@@ -150,7 +161,7 @@ function ChoiceResponse({ q, spec, result, submit }: ResponseProps & { spec: Ext
               result && !isRight && !isWrongPick && "border-line bg-panel opacity-55",
             )}
           >
-            <span aria-hidden="true" className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-raised text-xs font-bold text-fg-3 pointer-coarse:hidden">{i + 1}</span>
+            <span aria-hidden="true" className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-raised text-xs font-bold text-fg-3 pointer-coarse:hidden">{lettered ? String.fromCharCode(65 + i) : i + 1}</span>
             <span className="min-w-0 flex-1">
               {c.stimulus && <StimulusView s={c.stimulus} compact />}
               {(!c.stimulus || c.label) && <span>{c.label}</span>}
@@ -208,6 +219,25 @@ function NotesResponse({ q, spec, result, submit }: ResponseProps & { spec: Extr
     if (wrong && rev) for (const m of rev.missing) if (m.pos && !shown.some((p) => p.pos && at(p.pos, m.pos!))) marks.push({ ...m.pos, tone: "good", hollow: true });
     board = <Fretboard frets={Math.max(4, spec.maxFret)} labels={spec.labels ?? "none"} marks={marks} onPress={(pos, midi) => press(midi, pos)} />;
   }
+  // Enter checks a set answer wherever the focus is (a key, a fret), as it
+  // moves on once the answer is in.
+  const canCheck = !done && spec.mode === "set" && picked.length > 0;
+  const checkFn = useRef<() => void>(() => {});
+  checkFn.current = () => send(picked);
+  useEffect(() => {
+    if (!canCheck) return;
+    const on = (e: KeyboardEvent) => {
+      if (e.key !== "Enter" || e.repeat || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
+      const t = e.target as HTMLElement | null;
+      if (t && (["BUTTON", "A", "INPUT", "TEXTAREA", "SELECT", "SUMMARY"].includes(t.tagName) || t.isContentEditable)) return;
+      // On a key or a fret Enter selects it: there Check is a Tab away.
+      if (t && t.closest(".kb-key, .fb-cell")) return;
+      e.preventDefault();
+      checkFn.current();
+    };
+    window.addEventListener("keydown", on);
+    return () => window.removeEventListener("keydown", on);
+  }, [canCheck]);
   const hasBad = wrong && !!rev?.given.includes("bad");
   const hasMissing = wrong && !!rev?.missing.length;
   return (
@@ -229,7 +259,7 @@ function NotesResponse({ q, spec, result, submit }: ResponseProps & { spec: Extr
           {spec.mode === "sequence" && <span className="text-sm text-fg-3">{picked.length} of {need} notes</span>}
           {spec.mode === "set" && <span className="text-sm text-fg-3">{picked.length ? `${picked.length} selected · press a note again to remove it` : "Select the notes, then check"}</span>}
           {picked.length > 0 && <Button size="sm" variant="ghost" onClick={() => setPicked(spec.mode === "sequence" ? picked.slice(0, -1) : [])}>{spec.mode === "sequence" ? "Undo" : "Clear"}</Button>}
-          {spec.mode === "set" && <Button variant="primary" disabled={picked.length === 0} onClick={() => send(picked)}>Check</Button>}
+          {spec.mode === "set" && <Button variant="primary" disabled={picked.length === 0} onClick={() => send(picked)}>Check <span className="text-xs opacity-80 pointer-coarse:hidden">↵</span></Button>}
         </div>
       )}
     </div>
@@ -251,13 +281,18 @@ function TapResponse({ q, spec, result, submit }: ResponseProps & { spec: Extrac
   let n = 0;
   const tones = errors ? events.map((e) => (e.midis.length ? (inTime(n++) ? ("good" as const) : ("bad" as const)) : undefined)) : undefined;
   const ts = parseTime(spec.time);
+  // The count-in, in quarter beats, and how far apart the clicks are: in 6/8
+  // the click is the eighth, so three quarter beats are six clicks.
+  const countIn = spec.countInBeats || ts.barBeats;
+  const clickBeats = spec.clickBeats ?? 1;
+  const clicks = Math.round(countIn / clickBeats);
   return (
     <div>
       <Score clef="rhythm" time={spec.time} items={rhythmItems(events, spec.time, true, tones)} space={12} />
       <div className="mt-4 flex flex-col items-center gap-2">
         {!result && (tapper.state === "idle" || tapper.state === "done") && (
-          <Button variant="primary" onClick={() => tapper.start(spec.tempo, spec.countInBeats || ts.barBeats, totalBeats(events), (taps) => submit({ type: "taps", onsets: taps }))}>
-            Start ({spec.countInBeats || ts.barBeats} clicks count you in)
+          <Button variant="primary" onClick={() => tapper.start(spec.tempo, countIn, totalBeats(events), (taps) => submit({ type: "taps", onsets: taps }), clickBeats)}>
+            Start ({clicks} clicks count you in)
           </Button>
         )}
         {!result && (tapper.state === "count-in" || tapper.state === "go") && (
@@ -411,7 +446,6 @@ export function QuestionCard({ q, onAnswered, onNext, last }: { q: Question; onA
               Not on a short screen (a phone on its side): there the bar
               would cover the very notes the answer is shown on. */}
           <div className="z-10 -mx-1 mt-2 flex items-center justify-end gap-3 bg-panel/95 px-1 py-2.5 backdrop-blur-sm short:absolute short:top-1.5 short:right-3 short:m-0 short:gap-2 short:bg-transparent short:p-0 short:backdrop-blur-none [@media(min-height:560px)]:sticky [@media(min-height:560px)]:bottom-0">
-            <span className={cx("mr-auto font-display font-bold sm:hidden", result.grade.correct ? "text-good" : "text-bad")}>{result.grade.correct ? "Correct" : "Not quite"}</span>
             {q.reveal && <Button size="sm" onClick={() => reveal.play(q.reveal!, q.kind.includes("rhythm"))}>{short ? "Hear it" : "Hear the answer"}</Button>}
             <Button ref={nextRef} variant="primary" className="min-w-24 short:min-w-20" onClick={next}>
               {last ? "Finish" : "Next"} <span className="text-xs opacity-80 pointer-coarse:hidden">↵</span>
@@ -441,6 +475,18 @@ export function ExerciseRunner({ questions, onDone, onAnswer }: { questions: Que
     if (!el) return;
     const y = el.getBoundingClientRect().top;
     if (short ? Math.abs(y) > 24 : index > 0 && y < 56) el.scrollIntoView({ block: "start" });
+    if (short || index > 0) return;
+    // The first question of a batch sits under the page's heading. When it
+    // is too tall to show whole beneath it (a staff over a fretboard on a
+    // phone), start at the question instead, so nothing of it is cut off.
+    // Measured after the notation has been laid out, which takes two frames.
+    let raf = requestAnimationFrame(() => {
+      raf = requestAnimationFrame(() => {
+        const r = el.getBoundingClientRect();
+        if (r.top > 72 && r.bottom > window.innerHeight - 64 && r.height < window.innerHeight) el.scrollIntoView({ block: "start" });
+      });
+    });
+    return () => cancelAnimationFrame(raf);
   }, [index, short]);
   if (batch !== questions) {
     // A new batch: start again (state reset during render, not in an effect).

@@ -1,7 +1,7 @@
 import { CHORDS, chordNotes, chordPcs, type ChordRef } from "../music/chords.ts";
 import { fretMidi, positionsOf, type FretPos } from "../music/instruments.ts";
 import { intervalName, semitones, transpose } from "../music/intervals.ts";
-import { accSymbol, fromMidi, isBlackKey, isPitchClass, parsePitchClass, pc, pcLabel, toMidi } from "../music/notes.ts";
+import { accSymbol, fromMidi, isBlackKey, isPitchClass, parsePitchClass, pc, pcBothLabels, pcLabel, toMidi } from "../music/notes.ts";
 import { keySignature, parseKey, SCALES, scaleNotes } from "../music/scales.ts";
 import { aNumber, chordWhy, intervalPool, naturalAt, numberPool, numberWhy, pickKey } from "./identify.ts";
 import { scaleKeyboard, scalePick, scaleWhy } from "./play.ts";
@@ -72,7 +72,12 @@ export const buildInterval: Generator = (p, rng) => {
   const targetPos = places.length ? [...places].sort((a, b) => Math.abs(a.string - startPos!.string) - Math.abs(b.string - startPos!.string))[0] : undefined;
   // Below `full`, notes are named only as far as the learner can read them.
   const from = vocab === "plain" ? "the marked note" : sayNote(start, vocab);
-  const to = vocab === "plain" ? (guitar && targetPos ? `at string ${targetPos.string}, fret ${targetPos.fret}` : "the key shown") : sayNote(target, vocab, targetPos);
+  // Counted in steps there is no spelling to prefer, so a black key is given
+  // both its names ("C♯ / D♭"): the lesson teaches that a sharp raises and a
+  // flat lowers, and either describes this key.
+  const bothNames = labels === "steps" && isBlackKey(targetMidi) && (vocab === "names" || vocab === "full");
+  const to = vocab === "plain" ? (guitar && targetPos ? `at string ${targetPos.string}, fret ${targetPos.fret}` : "the key shown") : bothNames ? pcBothLabels(targetMidi) : sayNote(target, vocab, targetPos);
+  const thing = guitar ? "fret" : "key";
   return {
     prompt: `Play the note ${said} ${dir} the marked ${pcLabel(start)}.`,
     stimuli: [{ type: "text", text: `${cap(said)} ${dir} ${pcLabel(start)}` }],
@@ -82,7 +87,7 @@ export const buildInterval: Generator = (p, rng) => {
     expected: { type: "notes", midis: [targetMidi], match: "exact", ordered: false },
     explain:
       labels === "steps"
-        ? `${cap(said)} ${dir} ${from} is ${to}: ${semis === 1 ? "the very next note" : semis === 2 ? "two half steps, so one key or fret is skipped" : `${semis} half steps, counting every key or fret`}.`
+        ? `${cap(said)} ${dir} ${from} is ${to}: ${semis === 1 ? "the very next note" : semis === 2 ? `two half steps, so one ${thing} is skipped` : `${semis} half steps, counting every ${thing}`}.`
         : `${cap(said)} ${dir} ${from} is ${to}: ${plural(semis, "half step")} ${up ? "up" : "down"}, ${plural(iv.length ? Number(iv.slice(1)) : 1, "letter name")} counting both ends.`,
     reveal: sound([ev([startMidi], 0, 1), ev([targetMidi], 1, 1), ev([startMidi, targetMidi], 2, 2)], guitar ? "guitar" : "piano"),
   };

@@ -569,7 +569,7 @@ function ScoreSvg({ clef, items, keySig, time, tab, active, tone = "ink", onItem
               let col = 0;
               while (cols[col] !== undefined && Math.abs(cols[col] - n.pos) < 6) col++;
               cols[col] = n.pos;
-              ig.push(glyph(`acc${c}${notes.indexOf(n)}`, ACC_GLYPH[n.acc], hx - (1.15 + col * 1.0) * S, yOf(c, n.pos)));
+              ig.push(glyph(`acc${c}${notes.indexOf(n)}`, ACC_GLYPH[n.acc], hx - (1.4 + col * 1.05) * S, yOf(c, n.pos)));
             });
             notes.forEach((n, ni) => {
               const nx = hx + (shifted[ni] ? (up ? headW - 1 : -headW + 1) : 0);
@@ -583,7 +583,10 @@ function ScoreSvg({ clef, items, keySig, time, tab, active, tone = "ink", onItem
               const hi = notes[notes.length - 1].pos;
               const sx = up ? hx + headW - 0.06 * S : hx + 0.06 * S;
               const yStart = yOf(c, up ? lo : hi) + (up ? -0.15 : 0.15) * S;
-              const yEnd = yOf(c, up ? hi : lo) + (up ? -3.5 : 3.5) * S;
+              // An octave long, and for a note on ledger lines far from the
+              // staff, as far as the middle line.
+              const usual = yOf(c, up ? hi : lo) + (up ? -3.5 : 3.5) * S;
+              const yEnd = c === "rhythm" ? usual : up ? Math.min(usual, yOf(c, 4)) : Math.max(usual, yOf(c, 4));
               if (beam) {
                 // Stem and beam are drawn together once the whole group is placed.
                 const list = beamStems.get(beam.id) ?? [];

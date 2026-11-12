@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Content, Lesson } from "../../shared/content.ts";
 import type { Question } from "../../shared/exercise-types.ts";
 import { generateQuestions } from "../../shared/exercises.ts";
-import { isMastered } from "../../shared/progress.ts";
+import { isLessonDone, isMastered, LESSON_DONE_SCORE } from "../../shared/progress.ts";
 import { ExerciseRunner, type Answered } from "../exercises/Runner.tsx";
 import { Markdown } from "../markdown.tsx";
 import { go, href, scrollTop } from "../router.ts";
@@ -104,7 +104,7 @@ export function LessonPage({ lesson, onAnswer }: { lesson: Lesson; onAnswer?: (a
           <span>›</span>
           <span>Level {lesson.level}{level ? ` · ${level.title}` : ""}</span>
           <TrackBadge track={lesson.track} />
-          {done && <span className="font-semibold text-good">✓ done{done.bestScore < 1 ? ` · best ${Math.round(done.bestScore * 100)}%` : ""}</span>}
+          {done && (!isLessonDone(done) ? <span className="font-semibold text-warn">tried · best {Math.round(done.bestScore * 100)}% · done at {Math.round(LESSON_DONE_SCORE * 100)}%</span> : <span className="font-semibold text-good">✓ done{done.bestScore < 1 ? ` · best ${Math.round(done.bestScore * 100)}%` : ""}</span>)}
         </div>
         <h1 className="text-3xl leading-tight font-bold text-fg sm:text-4xl">{lesson.title}</h1>
         <p className="mt-2 text-lg text-fg-2">{lesson.summary}</p>
@@ -156,9 +156,10 @@ export function LessonPage({ lesson, onAnswer }: { lesson: Lesson; onAnswer?: (a
 
       {phase === "done" && (
         <Card className="px-4 py-5 sm:px-6 sm:py-6">
-          <p className="font-display text-3xl font-bold text-fg">{score >= 0.9 ? "Excellent." : score >= 0.7 ? "Good work." : "A solid start."}</p>
+          <p className="font-display text-3xl font-bold text-fg">{score >= 0.9 ? "Excellent." : score >= 0.75 ? "Good work." : score >= LESSON_DONE_SCORE - 1e-9 ? "A solid start." : "Not there yet."}</p>
           <p className="mt-1 text-lg text-fg-2">
             {answered.filter((a) => a.correct).length} of {answered.length} correct.
+            {score < LESSON_DONE_SCORE - 1e-9 && (isLessonDone(done) ? ` Your best run still counts, so the lesson stays done; this one was under the ${Math.round(LESSON_DONE_SCORE * 100)}% that marks it.` : ` The lesson counts as done at ${Math.round(LESSON_DONE_SCORE * 100)}%: reread it, then practise again. Your answers are recorded either way.`)}
           </p>
           <SaveNotice className="mt-4" save={save} />
           {/* The mastery bars come from saved progress: until the save lands they would show the old numbers. */}

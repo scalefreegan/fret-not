@@ -23,8 +23,11 @@ export interface KeyboardProps {
   lo: number;
   hi: number;
   marks?: KeyMark[];
-  /** Which keys show their name when not marked. */
-  labels?: "none" | "c" | "naturals" | "all";
+  /** Which keys show their name when not marked. "landmarks" is for an
+   *  exercise that grades the exact octave: only the Cs are named, with their
+   *  octave number, and middle C is pointed out, so the learner can find the
+   *  octave asked for without any other key being named. */
+  labels?: "none" | "c" | "landmarks" | "naturals" | "all";
   onPress?: (midi: number) => void;
   /** Play a piano note on press. Default true. */
   sound?: boolean;
@@ -253,7 +256,8 @@ export function Keyboard({ lo, hi, marks = [], labels = "naturals", onPress, sou
   // which is what a sighted learner sees; naming it would give answers away.
   const keyLabel = (m: number): string => {
     const where = isBlackKey(m) ? `Black key after white key ${whites.indexOf(m - 1) + 1}` : `White key ${whites.indexOf(m) + 1} of ${whites.length}`;
-    return (labels === "none" ? where : spokenKey(m)) + (markOf.has(m) ? ", marked" : "");
+    const named = labels === "landmarks" ? pc(m) === 0 : labels !== "none";
+    return (named ? spokenKey(m) + (labels === "landmarks" && m === 60 ? ", middle C" : "") : where) + (markOf.has(m) ? ", marked" : "");
   };
   const keyProps = (m: number) => ({
     ref: (el: SVGGElement | null) => {
@@ -297,7 +301,7 @@ export function Keyboard({ lo, hi, marks = [], labels = "naturals", onPress, sou
   const nameOf = (midi: number): string | null => {
     const p = fromMidi(midi);
     if (labels === "none") return null;
-    if (labels === "c") return pc(midi) === 0 ? `C${p.oct}` : null;
+    if (labels === "c" || labels === "landmarks") return pc(midi) === 0 ? `C${p.oct}` : null;
     if (isBlackKey(midi)) return labels === "all" ? pcBothLabels(midi).replace(" / ", "\n") : null;
     return pc(midi) === 0 ? `C${p.oct}` : p.letter + accSymbol(p.acc);
   };
@@ -315,6 +319,7 @@ export function Keyboard({ lo, hi, marks = [], labels = "naturals", onPress, sou
             <g key={m} {...keyProps(m)}>
               <rect x={x + 0.5} y={0.5} width={WHITE_W - 1} height={WHITE_H} rx={3} fill={down.has(m) ? "var(--ivory-edge)" : "var(--ivory)"} stroke="var(--ivory-edge)" />
               {mark && <circle cx={x + WHITE_W / 2} cy={WHITE_H - 17} r={9.5} fill={toneColor(mark.tone, m)} />}
+              {labels === "landmarks" && m === 60 && !mark && <circle cx={x + WHITE_W / 2} cy={WHITE_H - 17} r={9.5} fill="none" stroke="var(--ivory-ink)" strokeWidth={1.2} />}
               {name && (
                 <text x={x + WHITE_W / 2} y={WHITE_H - 17} textAnchor="middle" dominantBaseline="central" fontSize={name.length > 2 ? 7.5 : 9.5} fontWeight={700} fill={mark ? "var(--pc-ink)" : "var(--ivory-ink)"} style={{ fontFamily: "var(--font-sans)", pointerEvents: "none" }}>
                   {name}
@@ -368,6 +373,7 @@ export function Keyboard({ lo, hi, marks = [], labels = "naturals", onPress, sou
           <span style={{ visibility: box.more.right ? "visible" : "hidden" }}>higher keys ›</span>
         </p>
       )}
+      {labels === "landmarks" && inRange(60) && <p className="mt-1 text-center text-xs font-medium text-fg-3">The ringed key, C4, is middle C. Each C starts a new octave number.</p>}
       {typingHere && !coarse && <p className="mt-1 text-center text-[0.7rem] font-medium text-fg-3" data-typing-badge="">⌨ Your computer keyboard plays this one: A S D F… are the white keys, W E T Y U the black</p>}
     </div>
   );

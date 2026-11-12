@@ -3,7 +3,7 @@
 // repo and temp data. No real CLI is spawned and nothing touches this repo's
 // content/, data/ or git.
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
@@ -13,7 +13,7 @@ import { after, before, beforeEach, test } from "node:test";
 import type { ChatMessage } from "../shared/wire.ts";
 import { reapOnSignal } from "../../scripts/claude.mjs";
 import { handleChat, recoverInterruptedTurn, tutorBusy } from "./chat.ts";
-import { gitRoot, openWorkspace, STALE_MS, workspaceBase, writable } from "./turn.ts";
+import { gitRoot, linkOnTheWay, openWorkspace, processStarted, STALE_MS, sweepWorkspaces, workspaceBase, writable } from "./turn.ts";
 import { contentDir, loadContent, REPO_ROOT } from "./loader.ts";
 import { HttpError, sendJson } from "./sse.ts";
 import { dataDir, readHistory } from "./store.ts";
@@ -22,6 +22,10 @@ const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "fret-not-run-"));
 const repo = path.join(tmp, "repo");
 const content = path.join(repo, "content");
 const planFile = path.join(tmp, "plan.json");
+const slowFile = path.join(tmp, "slow");
+/** Make the next git calls having `word` among their arguments take 1.2 s. */
+const slow = (word: string) => fs.writeFileSync(slowFile, word);
+const slowHit = () => fs.existsSync(`${slowFile}.hit`);
 const saved = { PATH: process.env.PATH, TMPDIR: process.env.TMPDIR, GIT_CONFIG_GLOBAL: process.env.GIT_CONFIG_GLOBAL, GIT_CONFIG_NOSYSTEM: process.env.GIT_CONFIG_NOSYSTEM };
 let server: http.Server;
 let base = "";
@@ -175,6 +179,18 @@ process.stdin.on("end", () => {
   else line(envelope);
 });
 `, { mode: 0o755 });
+  // A `git` in front of the real one that can be told to dawdle: when the
+  // file `slow` names a word among its arguments, it notes that it was hit
+  // and waits before running the real git. Lets a test act in the middle of
+  // one particular git step.
+  const realGit = execFileSync("which", ["git"], { encoding: "utf8" }).trim();
+  fs.writeFileSync(path.join(bin, "git"), `#!/bin/sh
+if [ -f ${JSON.stringify(slowFile)} ]; then
+  w=$(cat ${JSON.stringify(slowFile)})
+  case " $* " in *" $w "*) : > ${JSON.stringify(slowFile + ".hit")}; sleep 1.2;; esac
+fi
+exec ${JSON.stringify(realGit)} "$@"
+`, { mode: 0o755 });
   process.env.PATH = `${bin}${path.delimiter}${saved.PATH}`;
   process.env.TMPDIR = path.join(tmp, "tmp");
 
@@ -208,7 +224,10 @@ beforeEach(() => {
   fs.rmSync(repo, { recursive: true, force: true });
   fs.rmSync(path.join(tmp, "data"), { recursive: true, force: true });
   fs.rmSync(`${planFile}.hung`, { force: true });
+  fs.rmSync(slowFile, { force: true });
+  fs.rmSync(`${slowFile}.hit`, { force: true });
   fs.mkdirSync(repo, { recursive: true });
+  fs.rmSync(workspaceBase(repo), { recursive: true, force: true });
   git("init", "-q", "-b", "main");
   git("config", "user.email", "test@example.invalid");
   git("config", "user.name", "Test");
@@ -620,33 +639,248 @@ test("a commit git refuses (no identity): the change is thrown away, said, and n
   nothingLeftBehind();
 });
 
-test("a worktree a dead server left behind is cleared at the next start, once it is old; the repository was never touched", async () => {
+/** Rewrite a worktree's owner marker. */
+const setOwner = (dir: string, owner: { pid: number; started: string } | null) => {
+  const file = path.join(dir, ".fret-not-owner.json");
+  if (owner) fs.writeFileSync(file, JSON.stringify(owner));
+  else fs.rmSync(file, { force: true });
+};
+
+test("leftover worktrees: a dead server's is cleared at once, a live server's is kept however old, an unmarked one goes by age; nothing else is touched", async () => {
   const was = fingerprint();
   const ready = await writable(repo, content);
   assert.ok(ready.ok);
-  // A server died two hours ago mid-turn, and another a minute ago.
-  const old = await openWorkspace(ready, Date.now() - 2 * 60 * 60_000);
-  const recent = await openWorkspace(ready, Date.now() - 60_000);
-  fs.writeFileSync(path.join(old.content, ALPHA), "AGENT HALF WRITTEN");
-  fs.writeFileSync(path.join(old.content, "lessons/core/0-09-half.md"), "---\nid: half");
-  assert.equal(worktrees(), 3);
-  assert.equal(fingerprint(), was, "making a worktree changes no file, index entry or ref");
+  const twoHoursAgo = Date.now() - 2 * 60 * 60_000;
+  // Another server that is still running (its Mac slept for two hours
+  // mid-turn), one that died a minute ago, an old directory with no marker,
+  // a fresh one with no marker, and one this very process forgot.
+  const other = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+  try {
+    await until("the other server to be visible to ps", () => Boolean(processStarted(other.pid!)));
+    const alive = await openWorkspace(ready, twoHoursAgo);
+    setOwner(alive.dir, { pid: other.pid!, started: processStarted(other.pid!)! });
+    const dead = await openWorkspace(ready, Date.now() - 60_000);
+    // The pid is running, but it is not the process that made the worktree:
+    // a recycled pid must not pass for the dead server.
+    setOwner(dead.dir, { pid: other.pid!, started: "Thu Jan  1 00:00:00 1970" });
+    const unmarkedOld = await openWorkspace(ready, twoHoursAgo + 1);
+    setOwner(unmarkedOld.dir, null);
+    const unmarkedNew = await openWorkspace(ready, Date.now() - 1000);
+    setOwner(unmarkedNew.dir, null);
+    const mine = await openWorkspace(ready);
+    fs.writeFileSync(path.join(dead.content, ALPHA), "AGENT HALF WRITTEN");
+    fs.writeFileSync(path.join(dead.content, "lessons/core/0-09-half.md"), "---\nid: half");
+    assert.equal(worktrees(), 6);
+    assert.equal(fingerprint(), was, "making a worktree changes no file, index entry or ref");
+    assert.ok(STALE_MS > 2 * 600_000, "older than any turn can run");
 
-  assert.deepEqual(recoverInterruptedTurn(), { removed: 1 });
-  assert.deepEqual(leftovers(), [recent.id], "the recent one may be another copy's turn in flight: left alone");
-  assert.equal(worktrees(), 2);
-  assert.ok(STALE_MS > 2 * 600_000, "older than any turn can run");
-  // A turn still works beside it.
+    assert.deepEqual(recoverInterruptedTurn(), { removed: 3 });
+    assert.deepEqual(leftovers().sort(), [alive.id, unmarkedNew.id].sort());
+    assert.equal(worktrees(), 3);
+    // A turn still works beside them, and leaves them alone.
+    plan({ reply: "Here." });
+    assert.deepEqual(names((await chat("hello")).events), ["start", "message", "commit", "done"]);
+    assert.deepEqual(leftovers().sort(), [alive.id, unmarkedNew.id].sort());
+    // The turn in flight is never swept by its own process.
+    assert.equal(sweepWorkspaces({ root: repo, keep: mine.dir }), 0);
+
+    // Once the other server is gone, so is its worktree.
+    other.kill("SIGKILL");
+    await until("the other server to be gone", () => processStarted(other.pid!) === "");
+    assert.deepEqual(recoverInterruptedTurn(0), { removed: 2 });
+    assert.equal(fingerprint(), was);
+    nothingLeftBehind();
+    // Things in the work area that are not this app's naming are not touched.
+    fs.mkdirSync(path.join(workspaceBase(repo), "something-else"));
+    assert.deepEqual(recoverInterruptedTurn(0), { removed: 0 });
+    assert.deepEqual(leftovers(), ["something-else"]);
+  } finally {
+    other.kill("SIGKILL");
+  }
+});
+
+test("the owner's own worktree whose folder is away (an unplugged drive) is still there after a turn and a sweep", async () => {
+  const ownWt = path.join(tmp, "owners-worktree");
+  fs.rmSync(ownWt, { recursive: true, force: true });
+  git("worktree", "add", "-q", "-b", "feature", ownWt);
+  fs.writeFileSync(path.join(ownWt, "wip.txt"), "staged in the other worktree\n");
+  execFileSync("git", ["add", "wip.txt"], { cwd: ownWt });
+  fs.renameSync(ownWt, `${ownWt}.away`); // the drive is unplugged
+  try {
+    // A leftover of the app's own whose folder is gone too: that record IS removed.
+    const ready = await writable(repo, content);
+    assert.ok(ready.ok);
+    const mine = await openWorkspace(ready, Date.now() - 2 * 60 * 60_000);
+    fs.rmSync(mine.dir, { recursive: true, force: true });
+    assert.equal(worktrees(), 3);
+
+    plan(addLesson);
+    assert.equal(of((await chat("another lesson please")).events, "commit").summary, "added lesson core-0-more.");
+    recoverInterruptedTurn(0);
+    assert.equal(worktrees(), 2, "git still knows the owner's worktree; the app's own stale record is gone");
+
+    fs.renameSync(`${ownWt}.away`, ownWt); // plugged back in
+    assert.equal(execFileSync("git", ["status", "--porcelain"], { cwd: ownWt, encoding: "utf8" }), "A  wip.txt\n", "its staged work is intact");
+    assert.equal(execFileSync("git", ["symbolic-ref", "HEAD"], { cwd: ownWt, encoding: "utf8" }).trim(), "refs/heads/feature");
+  } finally {
+    if (fs.existsSync(`${ownWt}.away`)) fs.renameSync(`${ownWt}.away`, ownWt);
+    git("worktree", "remove", "--force", ownWt);
+  }
+  nothingLeftBehind();
+});
+
+test("the owner's git settings have no say: autoStash, verifySignatures, no-ff, an fsmonitor program; staged and unstaged work outside content/ is byte-identical", async () => {
+  const marker = path.join(tmp, "fsmonitor-ran");
+  const hook = path.join(tmp, "fsmonitor.sh");
+  fs.writeFileSync(hook, `#!/bin/sh\n: > ${JSON.stringify(marker)}\n`, { mode: 0o755 });
+  fs.rmSync(marker, { force: true });
+  for (const [k, v] of [["merge.autoStash", "true"], ["rebase.autoStash", "true"], ["merge.verifySignatures", "true"], ["merge.ff", "false"], ["pull.rebase", "true"], ["submodule.recurse", "true"], ["commit.gpgsign", "true"], ["core.fsmonitor", hook], ["core.autocrlf", "true"]]) git("config", k, v);
+  // Staged, then changed again (MM); staged new file changed again (AM); untracked.
+  fs.writeFileSync(path.join(repo, "app.txt"), "staged\n");
+  git("add", "app.txt");
+  fs.writeFileSync(path.join(repo, "app.txt"), "staged\nand then unstaged\n");
+  fs.writeFileSync(path.join(repo, "new.txt"), "staged new\n");
+  git("add", "new.txt");
+  fs.writeFileSync(path.join(repo, "new.txt"), "staged new\nmore\n");
+  fs.writeFileSync(path.join(repo, "scratch.txt"), "untracked\n");
+  fs.rmSync(marker, { force: true }); // the test's own git calls ran it
+  const outside = () => [git("ls-files", "-s", "--", ".", ":(exclude)content"), git("diff", "--cached", "--", ".", ":(exclude)content"), git("diff", "--", ".", ":(exclude)content"), git("stash", "list"), fs.readFileSync(path.join(repo, "app.txt"), "utf8"), fs.readFileSync(path.join(repo, "new.txt"), "utf8"), fs.readFileSync(path.join(repo, "scratch.txt"), "utf8")].join("\n--\n");
+  const was = outside();
+  fs.rmSync(marker, { force: true });
+
+  plan(addLesson);
+  const { events } = await chat("another lesson please");
+  const ran = fs.existsSync(marker);
+  assert.deepEqual(names(events), ["start", "message", "commit", "done"]);
+  assert.equal(of(events, "commit").summary, "added lesson core-0-more.");
+  assert.equal(ran, false, "the owner's fsmonitor program was not run by the tutor's git calls");
+  assert.equal(outside(), was);
+  assert.deepEqual(status(), ["?? scratch.txt", "AM new.txt", "MM app.txt"].sort());
+  assert.equal(git("stash", "list"), "", "nothing was stashed");
+  assert.deepEqual(commits(), ["agent: added lesson core-0-more.", "init"]);
+  assert.equal(git("log", "-1", "--format=%P").trim().split(" ").length, 1, "a plain fast-forward, no merge commit");
+  // core.autocrlf=true is the owner's: the file is written into their tree
+  // with their line endings, as any checkout of theirs would; the commit
+  // itself holds what the agent wrote.
+  assert.equal(read(NEW), lesson("core-0-more", "alpha").replaceAll("\n", "\r\n"));
+  assert.equal(git("show", `HEAD:content/${NEW}`), lesson("core-0-more", "alpha"));
+  assert.deepEqual(loadContent().problems, [], "and the loader reads it");
+  assert.equal(git("status", "--porcelain", "--", "content"), "", "content/ is exactly the new commit");
+  assert.match(git("reflog", "-1", "--format=%gs", "main"), /^tutor: agent commit/);
+  nothingLeftBehind();
+});
+
+test("Stop in the first second — before the worktree even exists — stops the turn: the agent is never started and nothing is committed", async () => {
+  const was = fingerprint();
+  plan(addLesson);
+  slow("--detach"); // `git worktree add --detach …` takes 1.2 s
+  const ctrl = new AbortController();
+  const pending = fetch(`${base}/api/chat`, { method: "POST", body: JSON.stringify({ message: "another lesson please" }), headers: { "Content-Type": "application/json" }, signal: ctrl.signal }).then((r) => r.text()).catch(() => "aborted");
+  await until("the worktree to be on its way", slowHit);
+  ctrl.abort();
+  assert.equal(await pending, "aborted");
+  await until("the tutor to be free again", () => !tutorBusy());
+  assert.deepEqual(callsSeen(), [], "the agent was never started");
+  assert.equal(fingerprint(), was);
+  assert.deepEqual(readHistory().map((m) => m.role), ["user", "note"]);
+  assert.match(notes()[0], /did not finish \(cancelled\)/);
+  nothingLeftBehind();
+});
+
+test("Stop while the server is committing: the commit is not applied and nothing is kept", async () => {
+  const was = fingerprint();
+  plan(addLesson);
+  slow("commit");
+  const ctrl = new AbortController();
+  const pending = fetch(`${base}/api/chat`, { method: "POST", body: JSON.stringify({ message: "another lesson please" }), headers: { "Content-Type": "application/json" }, signal: ctrl.signal }).then((r) => r.text()).catch(() => "aborted");
+  await until("the commit to be on its way", slowHit);
+  ctrl.abort();
+  assert.equal(await pending, "aborted");
+  await until("the tutor to be free again", () => !tutorBusy());
+  assert.equal(fingerprint(), was, "no file, no index entry, no ref");
+  assert.deepEqual(readHistory().map((m) => m.role), ["user", "assistant", "note"]);
+  assert.match(notes()[0], /did not finish \(cancelled\)[\s\S]*nothing was committed/);
+  nothingLeftBehind();
+});
+
+test("Stop once the files are being written is too late, and the record says so: the commit lands whole and the history shows it", async () => {
+  plan(addLesson);
+  slow("read-tree");
+  const ctrl = new AbortController();
+  const pending = fetch(`${base}/api/chat`, { method: "POST", body: JSON.stringify({ message: "another lesson please" }), headers: { "Content-Type": "application/json" }, signal: ctrl.signal }).then((r) => r.text()).catch(() => "aborted");
+  await until("the apply to be on its way", slowHit);
+  ctrl.abort();
+  assert.equal(await pending, "aborted");
+  await until("the tutor to be free again", () => !tutorBusy());
+  assert.deepEqual(commits(), ["agent: added lesson core-0-more.", "init"]);
+  assert.deepEqual(status(), [], "applied whole: nothing half-written");
+  assert.equal(read(NEW), lesson("core-0-more", "alpha"));
+  assert.deepEqual(readHistory().map((m) => m.role), ["user", "assistant", "commit"]);
+  assert.deepEqual(refs(), []);
+  nothingLeftBehind();
+});
+
+test("content/ reached through a symbolic link: the turn is read-only (the copy's content/ would be the same folder)", async () => {
+  // content -> real-content, committed that way.
+  fs.renameSync(content, path.join(repo, "real-content"));
+  fs.symlinkSync("real-content", content);
+  git("add", "-A");
+  git("commit", "-q", "-m", "content is a link");
+  assert.equal(linkOnTheWay(repo, content), "content");
+  const was = fingerprint();
   plan({ reply: "Here." });
-  assert.deepEqual(names((await chat("hello")).events), ["start", "message", "commit", "done"]);
-  assert.deepEqual(leftovers(), [recent.id]);
-  assert.deepEqual(recoverInterruptedTurn(0), { removed: 1 });
+  const { events } = await chat("hello");
+  assert.deepEqual(names(events), ["start", "note", "message", "commit", "done"]);
+  assert.match(String(of(events, "note").text), /content is a symbolic link/);
+  assert.equal(callsSeen()[0].argv[callsSeen()[0].argv.indexOf("--tools") + 1], "Read,Glob,Grep");
+  assert.equal(callsSeen()[0].cwd, fs.realpathSync(repo));
   assert.equal(fingerprint(), was);
   nothingLeftBehind();
-  // Things in the work area that are not this app's naming are not touched.
-  fs.mkdirSync(path.join(workspaceBase(repo), "something-else"));
-  assert.deepEqual(recoverInterruptedTurn(0), { removed: 0 });
-  fs.rmSync(path.join(workspaceBase(repo), "something-else"), { recursive: true });
+});
+
+test("a kept commit the app never got to mention (it stopped mid-way) is said at the next turn, once; a half-applied one says how to finish", async () => {
+  // 1. A commit kept under a name with no note in the history.
+  const tree = git("rev-parse", "HEAD^{tree}").trim();
+  const head = git("rev-parse", "HEAD").trim();
+  fs.writeFileSync(path.join(tmp, "extra.md"), lesson("core-0-more", "alpha"));
+  const blob = git("hash-object", "-w", path.join(tmp, "extra.md")).trim();
+  const idx = path.join(tmp, "scratch-index");
+  const env = { ...process.env, GIT_INDEX_FILE: idx };
+  execFileSync("git", ["read-tree", tree], { cwd: repo, env });
+  execFileSync("git", ["update-index", "--add", "--cacheinfo", `100644,${blob},content/${NEW}`], { cwd: repo, env });
+  const newTree = execFileSync("git", ["write-tree"], { cwd: repo, env, encoding: "utf8" }).trim();
+  const kept = git("commit-tree", newTree, "-p", head, "-m", "agent: added lesson core-0-more.").trim();
+  git("update-ref", "refs/tutor/123-abc", kept);
+  plan({ reply: "Here." }, { reply: "Again." });
+  let { events } = await chat("hello");
+  assert.deepEqual(names(events), ["start", "note", "message", "commit", "done"]);
+  const note = String(of(events, "note").text);
+  assert.match(note, /An earlier tutor change \("added lesson core-0-more\."\) is kept as commit [0-9a-f]{10} under the name refs\/tutor\/123-abc; the app stopped before it could say so\. Nothing in your working tree was touched/);
+  ({ events } = await chat("hello again"));
+  assert.deepEqual(names(events), ["start", "message", "commit", "done"], "said once");
+  assert.deepEqual(refs(), ["refs/tutor/123-abc"], "kept until the owner decides");
+
+  // 2. The server died between writing the files and moving the branch.
+  fs.rmSync(path.join(tmp, "data"), { recursive: true, force: true });
+  git("read-tree", "-m", "-u", head, kept);
+  assert.deepEqual(status(), [`A  content/${NEW}`]);
+  plan({ reply: "Here." });
+  ({ events } = await chat("hello"));
+  const notesNow = events.filter((e) => e.event === "note").map((e) => String(e.data.text));
+  assert.ok(notesNow.some((t) => /half-way through putting it into your files[\s\S]*To finish: `git merge --ff-only refs\/tutor\/123-abc`/.test(t)), notesNow.join("\n"));
+  assert.equal(callsSeen()[0].argv[callsSeen()[0].argv.indexOf("--tools") + 1], "Read,Glob,Grep", "content/ has staged changes: read-only");
+  git("merge", "--ff-only", "-q", "refs/tutor/123-abc"); // the advice works
+  assert.deepEqual(status(), []);
+  assert.deepEqual(commits(), ["agent: added lesson core-0-more.", "init"]);
+
+  // 3. A name left on a commit that did land is dropped, and recorded.
+  fs.rmSync(path.join(tmp, "data"), { recursive: true, force: true });
+  plan({ reply: "Here." });
+  ({ events } = await chat("hello"));
+  assert.deepEqual(names(events), ["start", "message", "commit", "done"]);
+  assert.deepEqual(refs(), []);
+  assert.deepEqual(readHistory().map((m) => m.role), ["user", "commit", "assistant"]);
+  nothingLeftBehind();
 });
 
 test("quitting the app mid-turn deletes the turn's worktree before the process can exit", async () => {

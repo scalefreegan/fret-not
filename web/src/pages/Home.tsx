@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import type { Lesson } from "../../shared/content.ts";
-import { dueConcepts, isMastered, levelStatuses, nextLesson, reviewableConcepts, UNLOCK_FRACTION } from "../../shared/progress.ts";
+import { dueConcepts, isMastered, lessonState, levelStatuses, nextLesson, reviewableConcepts, UNLOCK_FRACTION } from "../../shared/progress.ts";
 import { go, href } from "../router.ts";
 import { useAppData } from "../app-data.ts";
 import { Button, Card, cx } from "../ui.tsx";
@@ -8,7 +8,12 @@ import { Button, Card, cx } from "../ui.tsx";
 // The path: every level, its lessons in three columns (theory, piano,
 // guitar), what is done, what is next, and what is due for review.
 
-function LessonRow({ lesson, done, isNext, locked }: { lesson: Lesson; done: boolean; isNext: boolean; locked: boolean }) {
+/** `state`: "attempted" is a batch finished below the pass mark (two right
+ *  out of eleven is not "done"): shown as tried, with its best score, not
+ *  with the green tick. */
+function LessonRow({ lesson, state, best, isNext, locked }: { lesson: Lesson; state: "new" | "attempted" | "done"; best: number; isNext: boolean; locked: boolean }) {
+  const done = state !== "new";
+  const weak = state === "attempted";
   return (
     <a
       href={locked ? undefined : href("lesson", lesson.id)}
@@ -16,13 +21,15 @@ function LessonRow({ lesson, done, isNext, locked }: { lesson: Lesson; done: boo
       title={lesson.summary}
       className={cx("group flex items-center gap-2.5 rounded-lg px-2.5 py-1.5 transition-colors pointer-coarse:min-h-11 pointer-coarse:items-start pointer-coarse:py-2", locked ? "cursor-not-allowed opacity-50" : "hover:bg-raised active:bg-raised", isNext && "bg-accent-soft")}
     >
-      <span className={cx("flex h-5 w-5 shrink-0 items-center justify-center rounded-full border-2 text-[0.7rem] font-bold", done ? "border-good bg-good text-panel" : isNext ? "border-accent" : "border-line-strong")}>{done ? "✓" : ""}</span>
+      <span aria-hidden="true" className={cx("flex h-5 w-5 shrink-0 items-center justify-center rounded-full border-2 text-[0.7rem] font-bold", done && weak ? "border-warn text-warn" : done ? "border-good bg-good text-panel" : isNext ? "border-accent" : "border-line-strong")}>{done ? (weak ? "~" : "✓") : ""}</span>
+      {done && <span className="sr-only">{weak ? `Tried, best ${Math.round(best * 100)}%, not done yet: ` : "Done: "}</span>}
       {/* A mouse gets the summary as a tooltip. A finger cannot hover, so on
           a touch screen the title wraps in full and the summary sits under it. */}
       <span className="min-w-0 flex-1">
-        <span className={cx("block truncate pointer-coarse:overflow-visible pointer-coarse:whitespace-normal", done ? "text-fg-2" : "font-medium text-fg")}>{lesson.title}</span>
+        <span className={cx("block truncate pointer-coarse:overflow-visible pointer-coarse:whitespace-normal", done && !weak ? "text-fg-2" : "font-medium text-fg")}>{lesson.title}</span>
         <span className="hidden text-sm leading-snug text-fg-3 pointer-coarse:block">{lesson.summary}</span>
       </span>
+      {weak && !isNext && <span aria-hidden="true" className="text-xs font-semibold text-warn">best {Math.round(best * 100)}%</span>}
       {isNext && <span className="text-xs font-bold text-accent">NEXT</span>}
     </a>
   );
@@ -89,7 +96,13 @@ export function HomePage() {
         const outline = level.status === "outline";
         // The level that gates this one is the nearest earlier level with
         // something to master, which is not always the one just before.
-        const need = Math.max(0, Math.ceil(st.gateTotal * UNLOCK_FRACTION) - st.gateMastered);
+        const target = Math.ceil(st.gateTotal * UNLOCK_FRACTION - 1e-9);
+        const need = Math.max(0, target - st.gateMastered);
+        // Which concepts the count is over: the theory plus the instrument(s)
+        // this learner is furthest along with, not every concept of the level
+        // (which is what the "n/m mastered" bar beside the heading counts).
+        const trackNames = st.gateTracks.map((t) => (t === "core" ? "theory" : (content.tracks.find((x) => x.id === t)?.title ?? t).toLowerCase()));
+        const over = trackNames.length > 1 ? `${trackNames.slice(0, -1).join(", ")} and ${trackNames[trackNames.length - 1]}` : (trackNames[0] ?? "");
         return (
           <section key={level.id} className="mt-8">
             <div className="flex flex-wrap items-end justify-between gap-x-6 gap-y-1">
@@ -120,7 +133,7 @@ export function HomePage() {
               <>
                 {!st.unlocked && (
                   <p className="mt-2 rounded-lg bg-raised px-3 py-2 text-sm text-fg-2">
-                    Locked. {st.gate !== null ? `Master ${need} more concept${need === 1 ? "" : "s"} in level ${st.gate} to open it, or ` : "To open it, "}<a className="font-semibold underline pointer-coarse:inline-flex pointer-coarse:min-h-11 pointer-coarse:items-center" href={href("placement")}>take the placement check</a>.
+                    Locked. {st.gate !== null ? `It opens when ${target} of level ${st.gate}'s ${st.gateTotal} ${over} concepts are mastered: you have ${st.gateMastered}, so ${need} more. Or ` : "To open it, "}<a className="font-semibold underline pointer-coarse:inline-flex pointer-coarse:min-h-11 pointer-coarse:items-center" href={href("placement")}>take the placement check</a>.
                   </p>
                 )}
                 <Card className="mt-3 grid gap-x-4 gap-y-3 px-2 py-3 sm:px-3 md:grid-cols-3">
@@ -131,7 +144,7 @@ export function HomePage() {
                         <p className="px-2.5 pb-1 text-xs font-bold tracking-wide text-fg-3 uppercase">{track.id === "core" ? "Theory" : track.title}</p>
                         {mine.length === 0 && <p className="px-2.5 text-sm text-fg-3">—</p>}
                         {mine.map((l) => (
-                          <LessonRow key={l.id} lesson={l} done={!!progress.lessons[l.id]} isNext={next?.id === l.id} locked={!st.unlocked} />
+                          <LessonRow key={l.id} lesson={l} state={lessonState(progress.lessons[l.id])} best={progress.lessons[l.id]?.bestScore ?? 0} isNext={next?.id === l.id} locked={!st.unlocked} />
                         ))}
                       </div>
                     );

@@ -41,5 +41,6 @@ test("checks across parameters: intervals too wide for the fretboard, a range wi
   assert.match(checkParams(ef, { instrument: "guitar", range: ["C7", "C8"] }).join(), /no note/);
   // The interval widget can hide qualities.
   assert.deepEqual(checkParams(WIDGETS.interval.params, { from: "C4", to: "E4", labels: "numbers" }), []);
-  assert.equal(checkParams(WIDGETS.interval.params, { from: "C4", to: "E4", labels: "steps" }).length, 1);
+  assert.equal(checkParams(WIDGETS.interval.params, { from: "C4", to: "E4", labels: "steps" }).length, 0);
+  assert.equal(checkParams(WIDGETS.interval.params, { from: "C4", to: "E4", labels: "bogus" }).length, 1);
 });
