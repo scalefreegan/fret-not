@@ -19,7 +19,7 @@
 
 ## Features
 
-- **A guided path.** Short lessons in three linked tracks (theory, piano, guitar) across four written levels: Sound; Notes and layout; Rhythm and reading; Intervals, scales and first chords. Four more levels are outlined.
+- **A guided path.** 49 short lessons in three linked tracks (theory, piano, guitar) across four written levels: Sound; Notes and layout; Rhythm and reading; Intervals, scales and first chords. Four more levels are outlined.
 - **Linked views.** The same note appears on the staff, the keyboard, the fretboard and in tab at once, and each pitch class keeps the same colour everywhere.
 - **Interactive physics.** A vibrating-string simulator, a harmonic mixer, live waveform and spectrum, consonance by frequency ratio, and how each instrument makes its sound.
 - **Exercises.** Generated and graded by a tested music engine: name what you see, ear training, play it on the virtual instrument, build it from a rule, tap a rhythm.
@@ -38,7 +38,7 @@ npm --prefix web install
 npm run dev          # http://localhost:38600
 ```
 
-Prefer a Dock icon on macOS? Build the app with `macos/build-app.sh` (see [`macos/README.md`](macos/README.md)).
+Prefer a Dock icon on macOS? Build the app with `macos/build-app.sh` (needs a working `clang`; see [`macos/README.md`](macos/README.md)).
 
 The Tutor needs the [Claude Code](https://claude.com/claude-code) CLI installed and logged in. Everything else works without it.
 
