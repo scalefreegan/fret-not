@@ -7,8 +7,8 @@ import type { NarrateOptions, NarrationHandle } from "./audio/speech.ts";
 // same way app-data.ts/state.tsx are, so each hot-reloads cleanly.
 
 export interface ListenState {
-  /** Whether Listen mode (auto read-aloud) is turned on. Persisted like the
-   *  tutor's model (data/settings.json). */
+  /** Whether Listen mode (auto read-aloud) is turned on. Saved per
+   *  learner (learners.listen_mode, docs/DATA.md). */
   on: boolean;
   setOn: (on: boolean) => void;
   /** Null until the learner has picked a voice; Listen mode has nothing to

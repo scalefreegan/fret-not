@@ -1,12 +1,14 @@
 # Fret Not — agent instructions
 
 A visual app for learning how music works (sound, notes, rhythm, reading,
-scales, chords), shown and drilled on piano and guitar. Single user, localhost,
-no auth, **no database**: the curriculum is markdown and YAML under `content/`,
-tracked by git; learner progress is JSON under `data/` (gitignored). Read
-`docs/PRD.md` first, then `docs/CONTENT.md` (the file-format contract) and
-`docs/CONTENT-REFERENCE.md` (generated) before touching content, the loader or
-the registry.
+scales, chords), shown and drilled on piano and guitar. Localhost, with
+logins: an account holds several learners. The curriculum is markdown and
+YAML under `content/`, tracked by git; accounts, learners, progress, Listen
+settings and tutor chat are in a local Postgres 17 database (`fret_not`).
+Read `docs/PRD.md` first, then `docs/CONTENT.md` (the file-format contract)
+and `docs/CONTENT-REFERENCE.md` (generated) before touching content, the
+loader or the registry, and `docs/DATA.md` before touching the database,
+auth or anything learner-scoped.
 
 ## Layout
 ```
@@ -15,12 +17,15 @@ web/shared/music/        the music engine: pure TS, no DOM/Node, runs in browser
 web/shared/registry.ts   every widget and exercise kind with its parameters — single source of truth
 web/shared/exercises*    question generation and grading (pure, seeded)
 web/shared/progress.ts   mastery, spaced review, unlocks, placement (pure)
-web/server/              Vite serve-middleware API: loader, content, progress, chat (the tutor)
+web/server/              Vite serve-middleware API: loader, content, auth, progress, chat (the tutor)
+scripts/db/              Postgres: schema.ts, migrations/, owned.ts (owner-scoped helpers), accounts.ts
 web/src/audio/           samples + synth, scheduling on the audio clock
 web/src/widgets/         sound/ (physics widgets), notation/ (staff, keyboard, fretboard, tab …)
 web/src/exercises/       the runner that renders Questions
 web/src/pages/           Home (path), Lesson, Review + Placement, Lab, Sketchpad, Gallery
 web/src/tutor/           the tutor drawer
+web/src/account/         auth gate, login / first run, learner picker, header learner menu
+web/src/api/client.ts    the one fetch: X-Learner-Id, 401 and stale_learner events
 scripts/claude.mjs       spawns headless `claude -p` for the tutor
 macos/                   Dock app (Fret Not.app)
 ```
@@ -29,8 +34,14 @@ macos/                   Dock app (Fret Not.app)
 - Port **38600**, `strictPort`, polling watcher (FSEvents is unreliable on this
   machine). Siblings: jev-ants 38500, Lingo Dojo 38400, Atlas 38300, Wine Guide
   38200, Basecamp 38100.
-- Every API route goes through `wrap()` in `web/server/api.ts` (same-origin
-  check). No exceptions.
+- Every API route goes through `wrap()` in `web/server/api.ts` with an auth
+  level (public, user, learner); the same-origin check stays first. No
+  exceptions. Client calls go through `web/src/api/client.ts`.
+- Personal rows are read and written only through the owner-scoped helpers
+  `forUser` / `forLearner` (`scripts/db/owned.ts`); `rawDb()` is for the few
+  owner-less lookups (login by username, session by token hash).
+- Only an admin account's tutor may write `content/`; anyone else's turn is
+  read-only. Accounts come from `npm run user`; the first from the app.
 - **Adding or changing a widget or exercise kind starts in
   `web/shared/registry.ts`**, then the component (`web/src/widgets/registry.tsx`)
   or generator (`web/shared/exercises/`), then `node scripts/gen-reference.ts`.
@@ -74,18 +85,25 @@ macos/                   Dock app (Fret Not.app)
 - Reviews fall due by local calendar day (`dueAt` is the start of that day),
   not 24 hours after the last answer.
 - Tests never touch the real `content/` or `data/`: point `FRET_CONTENT_DIR`
-  and `FRET_DATA_DIR` at temp dirs.
+  and `FRET_DATA_DIR` at temp dirs. They never touch a Postgres server
+  either: `freshDb()` (`scripts/tests/testdb.mjs`, PGlite with the real
+  migrations), or `web/server/test-db.ts` for server tests. Never run
+  `npm run db:setup` or `db:migrate` against the real `fret_not` from a
+  worktree (a linked worktree refuses without its own `DATABASE_URL`).
 - Colours come from the tokens in `web/src/index.css`; components never write
   a raw hex or a `dark:` variant.
 
 ## Build & test
 ```sh
-npm --prefix web install
+npm install && npm --prefix web install
+npm run db:setup            # once per machine (Postgres 17 running); idempotent
 npm run dev                 # http://localhost:38600   (#/gallery shows every widget)
 npm test                    # node --test: engine, registry, loader, exercises, progress, tutor
 npm run check:content       # validate content/ as the app does (-- --gaps for coverage)
 npm run typecheck && npm run lint
 node scripts/gen-reference.ts   # after editing the registry
+npm run db:generate         # after editing scripts/db/schema.ts; commit the SQL
+npm run user -- add <name>  # another account (list, passwd, disable, admin …)
 ```
 Verify UI in the real app (Playwright MCP or Claude-in-Chrome) before claiming
 a feature works. Music content must be exactly right: check note names,

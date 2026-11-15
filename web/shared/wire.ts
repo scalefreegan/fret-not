@@ -41,7 +41,7 @@ export interface TutorContext {
   recent?: { prompt: string; concept: string; correct: boolean; explain: string }[];
 }
 
-/** One line of data/chat.jsonl. `commit` lines record an auto-commit the
+/** One message of a learner's tutor chat. `commit` lines record an auto-commit the
  *  server made after a tutor turn: text is "<short hash>: <summary>". `note`
  *  lines are the server speaking: content it had to refuse, and why. */
 export type ChatRole = "user" | "assistant" | "commit" | "note";

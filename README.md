@@ -65,14 +65,20 @@
 
 ## How it works
 
-Single user, localhost, no accounts, no database. The curriculum is plain markdown and YAML in `content/`; learner progress is JSON under `data/` (gitignored). The music engine in `web/shared/music/` is pure TypeScript that runs in the browser, the server and the tests, and every exercise is generated and graded by it, never by the Tutor.
+Localhost, with logins: an account holds several learners, each with their own progress, Listen settings and Tutor chat, kept in a local Postgres database. Only an admin's Tutor writes lessons. The curriculum is plain markdown and YAML in `content/`, tracked by git. The music engine in `web/shared/music/` is pure TypeScript that runs in the browser, the server and the tests, and every exercise is generated and graded by it, never by the Tutor.
 
 ## Get started
 
+Needs Postgres 17 running locally (`brew install postgresql@17 && brew services start postgresql@17`).
+
 ```sh
+npm install                 # the database tools
 npm --prefix web install
-npm run dev          # http://localhost:38600
+npm run db:setup            # once per machine: creates the fret_not database and migrates it
+npm run dev                 # http://localhost:38600
 ```
+
+Open it on the Mac itself and create the first account: it is the admin, and if this copy already had progress under `data/` (from before logins) its first learner starts with it. Add other people with `npm run user -- add <name>`. [`docs/DATA.md`](docs/DATA.md) has the details.
 
 Prefer a Dock icon on macOS? Build the app with `macos/build-app.sh` (needs a working `clang`; see [`macos/README.md`](macos/README.md)).
 
@@ -81,7 +87,7 @@ The Tutor needs the [Claude Code](https://claude.com/claude-code) CLI installed 
 ## Development
 
 ```sh
-npm test                  # engine, loader, exercises, progress, tutor
+npm test                  # engine, loader, exercises, progress, tutor, auth (on an in-process PGlite)
 npm run check:content     # validate the curriculum
 npm run typecheck && npm run lint
 ```

@@ -1,6 +1,7 @@
 # Fret Not — PRD
 
-Personal, single-user, localhost, no auth. A **highly visual app for learning how
+Personal and localhost, with logins: one account can hold several learners
+(docs/DATA.md). A **highly visual app for learning how
 music works**: sound and harmonics, notes, rhythm, reading notation, intervals,
 scales, chords, harmony and composition, with every idea shown, heard and drilled
 on real instruments. Piano and guitar come first. The design must take more
@@ -19,7 +20,7 @@ final for v1):
 | Notation | All four in v1: **staff** (treble and bass), **rhythm** (durations, rests, bars, time signatures), **guitar tablature**, **chord diagrams and symbols** |
 | Progress | **Mastery + spaced review.** Per-concept mastery from exercise results, reviews at growing intervals, levels unlock as mastery builds, a placement check lets a more advanced learner skip ahead |
 | Sound | **Recorded piano and guitar samples** (openly licensed sets) for lessons and exercises, plus a **synth engine** for the physics lessons where harmonics are added and removed one at a time |
-| Learners | **One learner, profile-ready.** Progress is stored per profile id so more learners are a small later change. No profile switcher and no kids mode in v1 |
+| Learners | **Accounts and learners** (added 2026-11-15). Real logins (password, httpOnly session cookie); an account holds several password-less learners, picked on "Who's practising?" and switched from the header. Each learner has its own progress, Listen settings and tutor chat. Only an admin account's tutor may write lessons; everyone else's answers only. No kids mode |
 | Exercises | All four kinds in v1: **identify** what you see, **ear training**, **play it** on the virtual instrument, **build it** from a rule |
 | Composition | **Sketchpad in the lab** (melody + chord progression with playback on staff, keyboard and fretboard). Composition lessons are later levels |
 | v1 curriculum | **Full beginner arc**: levels 0–3 fully written, later levels outlined (see Curriculum) |
@@ -27,7 +28,7 @@ final for v1):
 | Devices | **Mac only**, launched from the Dock; mouse and computer keyboard; works from a full window down to a narrow one |
 | Styles | Classical, folk and blues, rock and pop, jazz (jazz arrives late in the path). **Public-domain tunes, common progressions and original snippets only** — the repo is public, so no copyrighted songs |
 | Stack | Match Lingo Dojo (`../lingo-dojo`): React 19 + Vite + TS strict, Vite middleware API behind the same-origin `wrap()`, Tailwind 4, oxlint, `node --test`, beads; Dock app from `macos/`; **port 38600** |
-| Store | Curriculum is markdown + YAML under `content/`, tracked by git. Learner progress is JSON under `data/` (gitignored). **No database** |
+| Store | Curriculum is markdown + YAML under `content/`, tracked by git. Accounts, sessions, learners, progress, Listen settings and tutor chat are rows in a local **Postgres 17** database (`fret_not`, Drizzle schema, docs/DATA.md). `data/` keeps only the Listen audio cache, and the pre-database files, read once into the first account |
 
 ## Vocabulary
 
@@ -136,21 +137,24 @@ review schedule with growing intervals, and a missed review shortens its interva
 - **New input**: every way of playing a note (click, computer keyboard, later
   MIDI or microphone pitch detection) is an input source emitting the same
   note-on/note-off events. Exercises listen to events, not devices.
-- **New learner**: progress lives at `data/profiles/<id>/`; v1 has one id.
+- **New learner**: a row in `learners`; its progress, Listen settings and
+  chat hang off its id (docs/DATA.md).
 
 ## Non-goals (v1)
 
 - Listening to a real instrument (microphone, MIDI). The input layer leaves room.
 - Physical technique lessons (posture, fingering drills, picking, pedalling).
 - Tablet or phone layout, touch-first interaction.
-- A profile switcher, a kids mode (simplifying the content or pacing for
+- A kids mode (simplifying the content or pacing for
   children). Listen mode — reading lesson prose, tutor replies and exercise
   prompts aloud with a word-by-word highlight, for a learner who is not
   reading fluently yet — is a different thing: an accessibility aid over the
   same adult-beginner content, not a separate simplified curriculum.
 - A composition lesson track (the Sketchpad is in; the lessons are level 7).
 - Copyrighted songs. Alternate guitar tunings, left-handed fretboard, other clefs.
-- Multi-user, auth, deployment, a database.
+- Deployment beyond the one Mac (other devices on the network may log in; the
+  first account is made on the Mac itself), sign-up from the app (accounts
+  come from `npm run user`), learner passwords.
 
 ## Architecture
 
@@ -168,7 +172,8 @@ web/
   shared/progress.ts   mastery and review scheduling (pure)
   server/api.ts        plugins + wrap() same-origin guard
   server/loader.ts     load + validate content
-  server/progress.ts   read and write data/profiles/<id>/
+  server/progress.ts   the learner's progress row (locked, repaired, backed up)
+  server/auth.ts       logins, sessions, learners; wrap() gives each route its auth level
   server/chat.ts       SSE tutor chat and its validation loop
   server/turn.ts       the tutor's git worktree: when it may write, commit, fast-forward
   src/audio/           sample player, synth, scheduling on the audio clock
@@ -181,7 +186,8 @@ scripts/
   claude.mjs           spawn headless claude for the tutor (sibling pattern)
   check-content.ts     validate content/ from the command line
   gen-reference.ts     regenerate docs/CONTENT-REFERENCE.md from the registry
-data/                  learner progress, chat history, settings (gitignored)
+scripts/db/            Postgres: schema, migrations, owner-scoped helpers, accounts
+data/                  Listen audio cache; pre-database files kept as backup (gitignored)
 macos/                 Dock app (Fret Not.app), copied from Lingo Dojo, port 38600
 docs/                  this PRD; CONTENT.md (file-format contract); CONTENT-REFERENCE.md (generated)
 ```
@@ -283,8 +289,8 @@ How a tutor turn works (`web/server/chat.ts`, `web/server/turn.ts`):
   second to finish cannot fast-forward and its commit is kept under a ref.
 - The transcript is passed to the CLI on stdin (the system prompt, which
   holds the curriculum outline, goes on the command line), and the part replayed is
-  bounded by bytes as well as by message count. `data/chat.jsonl` is trimmed
-  to its newest messages once it passes about 1 MB.
+  bounded by bytes as well as by message count. Each learner's chat is
+  trimmed to its newest messages once it passes about 1 MB.
 
 Progress rules worth knowing (`web/shared/progress.ts`):
 
