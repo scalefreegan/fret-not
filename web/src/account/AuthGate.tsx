@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
-import type { MeReply } from "../../shared/wire.ts";
+import type { FirstRunReply, MeReply } from "../../shared/wire.ts";
 import App from "../App.tsx";
 import { getMe, logout, pickLearner } from "../api/auth.ts";
+import { ApiError } from "../api/client.ts";
 import { STALE_LEARNER_EVENT, UNAUTHORIZED_EVENT } from "../api/client.ts";
 import { AccountScreen } from "./AccountScreen.tsx";
 import { LearnerPicker } from "./LearnerPicker.tsx";
@@ -28,6 +29,8 @@ export function AuthGate() {
   const [picking, setPicking] = useState(false);
   /** A switch that failed, shown where it was asked for. */
   const [switchError, setSwitchError] = useState<string | null>(null);
+  /** What the first run could not import, until dismissed. */
+  const [imported, setImported] = useState<FirstRunReply["imported"] | null>(null);
 
   /** What the page shows. The app it renders names its own learner on
    *  every call (src/api/client.ts), so nothing global changes here. */
@@ -55,12 +58,20 @@ export function AuthGate() {
   }, [refresh, setMe]);
 
   async function signOut() {
+    setSwitchError(null);
     try {
       await logout();
-    } catch {
-      /* already logged out: the refresh below shows the login form either way */
+    } catch (e) {
+      // Already logged out (401): the refresh below shows the login form.
+      // Anything else (offline, the server down) means the session may well
+      // still be live, so say so rather than pretend.
+      if (!(e instanceof ApiError && e.status === 401)) {
+        setSwitchError(`Could not log out: ${(e as Error).message}`);
+        return;
+      }
     }
     setPicking(false);
+    setImported(null);
     await refresh();
   }
 
@@ -95,7 +106,18 @@ export function AuthGate() {
       </p>
     );
   }
-  if (me.firstRun) return <AccountScreen kind="first-run" onDone={setMe} />;
+  if (me.firstRun) {
+    return (
+      <AccountScreen
+        kind="first-run"
+        onDone={(m) => {
+          const report = "imported" in m ? m.imported : null;
+          if (report && (report.problems.length || report.backupId)) setImported(report);
+          setMe(m);
+        }}
+      />
+    );
+  }
   if (!me.user) return <AccountScreen kind="login" onDone={setMe} />;
   if (!me.learner || picking) {
     return (
@@ -120,6 +142,8 @@ export function AuthGate() {
         onManageLearners: () => setPicking(true),
         onLogout: () => void signOut(),
         switchError,
+        imported,
+        onDismissImported: () => setImported(null),
       }}
     />
   );
