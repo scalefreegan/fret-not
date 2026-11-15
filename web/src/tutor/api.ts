@@ -24,8 +24,8 @@ export interface ChatHandlers {
 /** EventSource can't POST, so the stream is parsed by hand (wine-guide
  *  pattern). Resolves when the server's terminal `done` arrives; a stream
  *  that ends without one is an error, not a quiet success. */
-async function ssePost(url: string, body: unknown, handlers: ChatHandlers, signal?: AbortSignal): Promise<void> {
-  const res = await apiFetch(url, { ...json(body), signal });
+async function ssePost(learnerId: string, url: string, body: unknown, handlers: ChatHandlers, signal?: AbortSignal): Promise<void> {
+  const res = await apiFetch(url, { ...json(body), signal }, learnerId);
   if (!res.ok || !res.body) {
     let detail = "";
     try {
@@ -66,24 +66,24 @@ async function ssePost(url: string, body: unknown, handlers: ChatHandlers, signa
   if (!sawDone) throw new Error("stream ended unexpectedly — the server may have restarted; try again");
 }
 
-export function sendChat(message: string, context: TutorContext, handlers: ChatHandlers, signal?: AbortSignal): Promise<void> {
-  return ssePost("/api/chat", { message, context } satisfies ChatRequest, handlers, signal);
+export function sendChat(learnerId: string, message: string, context: TutorContext, handlers: ChatHandlers, signal?: AbortSignal): Promise<void> {
+  return ssePost(learnerId, "/api/chat", { message, context } satisfies ChatRequest, handlers, signal);
 }
-export function getChatHistory(): Promise<ChatHistoryReply> {
-  return req<ChatHistoryReply>("/api/chat/history");
+export function getChatHistory(learnerId: string): Promise<ChatHistoryReply> {
+  return req<ChatHistoryReply>("/api/chat/history", undefined, learnerId);
 }
-export function clearChatHistory(): Promise<{ ok: true }> {
-  return req<{ ok: true }>("/api/chat/history", { method: "DELETE" });
+export function clearChatHistory(learnerId: string): Promise<{ ok: true }> {
+  return req<{ ok: true }>("/api/chat/history", { method: "DELETE" }, learnerId);
 }
-export function getSettings(): Promise<SettingsReply> {
-  return req<SettingsReply>("/api/settings");
+export function getSettings(learnerId: string): Promise<SettingsReply> {
+  return req<SettingsReply>("/api/settings", undefined, learnerId);
 }
-export function setModel(model: string): Promise<SettingsReply> {
-  return putSettings({ model });
+export function setModel(learnerId: string, model: string): Promise<SettingsReply> {
+  return putSettings(learnerId, { model });
 }
 /** /api/settings now also holds Listen mode's voice/model/on-off choice
  *  (server/chat.ts handleSettings): one settings object, one PUT. Exported
  *  so src/tts/ (used well beyond this drawer) does not need its own copy. */
-export function putSettings(patch: Partial<SettingsRequest>): Promise<SettingsReply> {
-  return req<SettingsReply>("/api/settings", json(patch, "PUT"));
+export function putSettings(learnerId: string, patch: Partial<SettingsRequest>): Promise<SettingsReply> {
+  return req<SettingsReply>("/api/settings", json(patch, "PUT"), learnerId);
 }

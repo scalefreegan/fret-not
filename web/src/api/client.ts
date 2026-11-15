@@ -1,11 +1,13 @@
 import type { ErrorCode, ErrorReply, LearnerHeader } from "../../shared/wire.ts";
 
 // The one fetch every API call goes through (progress, Listen, the tutor,
-// the curriculum, logins). It names the learner this page shows in
-// X-Learner-Id: the session cookie is shared by every tab, so that header is
-// how the server tells a stale tab (one still showing a learner another tab
-// switched away from) and refuses it with 409 `stale_learner` instead of
-// writing into the wrong learner's progress. It also turns the two replies
+// the curriculum, logins). A learner-scoped call names its learner in
+// X-Learner-Id, passed in by the caller: the app for one learner (keyed by
+// it in the auth gate) passes its own id, never "whoever is shown now", so a
+// save still in flight from before a switch cannot go out as the next
+// learner. The session cookie is shared by every tab, so that header is also
+// how the server tells a stale tab and refuses it with 409 `stale_learner`
+// instead of writing into the wrong learner's progress. It also turns the two replies
 // the auth gate must hear about into window events, so no caller has to:
 //
 //   401                   → UNAUTHORIZED_EVENT  (logged out, expired, disabled)
@@ -31,40 +33,34 @@ export class ApiError extends Error {
   }
 }
 
-let pageLearner: string | null = null;
-
-/** Set by the auth gate whenever the learner it shows changes. */
-export function setPageLearner(learnerId: string | null): void {
-  pageLearner = learnerId;
-}
-
-/** The learner this page shows, or null before one is picked. */
-export function getPageLearner(): string | null {
-  return pageLearner;
+/** Tell the page (the window, in a browser; nothing under node --test). */
+function emit(name: string): void {
+  (globalThis as { dispatchEvent?: (e: Event) => boolean }).dispatchEvent?.(new Event(name));
 }
 
 function errorOf(body: unknown): Partial<ErrorReply> | null {
   return body && typeof body === "object" ? (body as Partial<ErrorReply>) : null;
 }
 
-/** fetch with the page's learner, raising the 401 and stale-learner events.
- *  The body is left unread for the caller (a stream stays a stream). */
-export async function apiFetch(url: string, init: RequestInit = {}): Promise<Response> {
+/** fetch naming `learnerId` (null for the account-level routes), raising
+ *  the 401 and stale-learner events. The body is left unread for the caller
+ *  (a stream stays a stream). */
+export async function apiFetch(url: string, init: RequestInit = {}, learnerId: string | null = null): Promise<Response> {
   const headers = new Headers(init.headers);
-  if (pageLearner) headers.set(LEARNER_HEADER, pageLearner);
+  if (learnerId) headers.set(LEARNER_HEADER, learnerId);
   const res = await fetch(url, { ...init, headers });
-  if (res.status === 401) window.dispatchEvent(new Event(UNAUTHORIZED_EVENT));
+  if (res.status === 401) emit(UNAUTHORIZED_EVENT);
   if (res.status === 409) {
     const body: unknown = await res.clone().json().catch(() => null);
-    if (errorOf(body)?.code === STALE_LEARNER) window.dispatchEvent(new Event(STALE_LEARNER_EVENT));
+    if (errorOf(body)?.code === STALE_LEARNER) emit(STALE_LEARNER_EVENT);
   }
   return res;
 }
 
 /** apiFetch, then the JSON body; a non-2xx reply throws an ApiError with
  *  the server's sentence. */
-export async function request<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await apiFetch(url, init);
+export async function request<T>(url: string, init?: RequestInit, learnerId: string | null = null): Promise<T> {
+  const res = await apiFetch(url, init, learnerId);
   const text = await res.text();
   let body: unknown = null;
   try {

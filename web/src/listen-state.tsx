@@ -5,7 +5,7 @@ import { narrate, type NarrateOptions, type NarrationHandle } from "./audio/spee
 import { ListenContext, type ListenState } from "./listen-data.ts";
 import { getSettings, putSettings } from "./tutor/api.ts";
 
-export function ListenProvider({ children }: { children: ReactNode }) {
+export function ListenProvider({ learnerId, children }: { learnerId: string; children: ReactNode }) {
   const [on, setOnState] = useState(false);
   const [voiceId, setVoiceIdState] = useState<string | null>(null);
   const [modelId, setModelIdState] = useState("eleven_v4");
@@ -20,7 +20,7 @@ export function ListenProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     let live = true;
-    getSettings().then(
+    getSettings(learnerId).then(
       (s) => {
         if (!live) return;
         // A click on the toggle before this load came back wins over it.
@@ -37,7 +37,7 @@ export function ListenProvider({ children }: { children: ReactNode }) {
     return () => {
       live = false;
     };
-  }, []);
+  }, [learnerId]);
 
   const stop = useCallback(() => {
     current.current?.stop();
@@ -50,23 +50,23 @@ export function ListenProvider({ children }: { children: ReactNode }) {
       touched.current = true;
       setOnState(next);
       if (!next) stop();
-      void putSettings({ listenMode: next }).catch(() => setOnState(!next));
+      void putSettings(learnerId, { listenMode: next }).catch(() => setOnState(!next));
     },
-    [stop],
+    [learnerId, stop],
   );
   const setVoiceId = useCallback((id: string) => {
     setVoiceIdState(id);
-    void putSettings({ ttsVoiceId: id }).catch(() => {});
-  }, []);
+    void putSettings(learnerId, { ttsVoiceId: id }).catch(() => {});
+  }, [learnerId]);
   const setModelId = useCallback((id: string) => {
     setModelIdState(id);
-    void putSettings({ ttsModelId: id }).catch(() => {});
-  }, []);
+    void putSettings(learnerId, { ttsModelId: id }).catch(() => {});
+  }, [learnerId]);
 
   const loadVoices = useCallback(() => {
     setVoicesLoading(true);
     setVoicesError(null);
-    getVoices().then(
+    getVoices(learnerId).then(
       (r) => {
         setVoices(r.voices);
         setVoicesLoading(false);
@@ -76,7 +76,7 @@ export function ListenProvider({ children }: { children: ReactNode }) {
         setVoicesLoading(false);
       },
     );
-  }, []);
+  }, [learnerId]);
 
   const speak = useCallback(
     (text: string, opts: NarrateOptions = {}): NarrationHandle | null => {
@@ -85,7 +85,7 @@ export function ListenProvider({ children }: { children: ReactNode }) {
         opts.onError?.(new Error("Choose a voice before using Listen mode."));
         return null;
       }
-      const handle = narrate(text, {
+      const handle = narrate(learnerId, text, {
         ...opts,
         onWord: opts.onWord,
         onEnd: () => {
@@ -107,7 +107,7 @@ export function ListenProvider({ children }: { children: ReactNode }) {
       setSpeaking(true);
       return handle;
     },
-    [voiceId],
+    [learnerId, voiceId],
   );
 
   useEffect(() => stop, [stop]); // leaving the app entirely: stop any voice

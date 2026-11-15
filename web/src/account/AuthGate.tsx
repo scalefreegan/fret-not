@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { MeReply } from "../../shared/wire.ts";
 import App from "../App.tsx";
 import { getMe, logout, pickLearner } from "../api/auth.ts";
-import { STALE_LEARNER_EVENT, UNAUTHORIZED_EVENT, setPageLearner } from "../api/client.ts";
+import { STALE_LEARNER_EVENT, UNAUTHORIZED_EVENT } from "../api/client.ts";
 import { AccountScreen } from "./AccountScreen.tsx";
 import { LearnerPicker } from "./LearnerPicker.tsx";
 
@@ -29,11 +29,9 @@ export function AuthGate() {
   /** A switch that failed, shown where it was asked for. */
   const [switchError, setSwitchError] = useState<string | null>(null);
 
-  /** What the page shows, and the learner every call says it shows, changed together. */
-  const setMe = useCallback((m: MeReply) => {
-    setPageLearner(m.user && m.learner ? m.learner.id : null);
-    setMeState(m);
-  }, []);
+  /** What the page shows. The app it renders names its own learner on
+   *  every call (src/api/client.ts), so nothing global changes here. */
+  const setMe = useCallback((m: MeReply) => setMeState(m), []);
 
   const refresh = useCallback(async () => {
     try {

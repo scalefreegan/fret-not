@@ -156,8 +156,8 @@ function Shell({ account }: { account: AccountActions }) {
  *  it by learner, so a switch starts it afresh). */
 export default function App({ account }: { account: AccountActions }) {
   return (
-    <AppDataProvider>
-      <ListenProvider>
+    <AppDataProvider learnerId={account.learner.id}>
+      <ListenProvider learnerId={account.learner.id}>
         <Shell account={account} />
       </ListenProvider>
     </AppDataProvider>

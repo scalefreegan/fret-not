@@ -20,28 +20,28 @@ export interface ProgressReply {
   lessonDropped?: boolean;
 }
 
-async function call(path: string, body?: unknown): Promise<ProgressReply> {
-  const data = await request<unknown>(`/api/progress${path}`, body === undefined ? undefined : json(body));
+async function call(learnerId: string, path: string, body?: unknown): Promise<ProgressReply> {
+  const data = await request<unknown>(`/api/progress${path}`, body === undefined ? undefined : json(body), learnerId);
   if (!data || typeof data !== "object" || !("progress" in data)) throw new Error("the server sent no progress");
   return data as ProgressReply;
 }
 
-export function getProgress(): Promise<ProgressReply> {
-  return call("");
+export function getProgress(learnerId: string): Promise<ProgressReply> {
+  return call(learnerId, "");
 }
 
 /** Fold exercise answers in; with `lesson`, also mark that lesson's
  *  exercises finished with this score (0–1). */
-export function postAnswers(results: AnswerResult[], lesson?: { id: string; score: number }): Promise<ProgressReply> {
-  return call("/answers", lesson ? { results, lesson } : { results });
+export function postAnswers(learnerId: string, results: AnswerResult[], lesson?: { id: string; score: number }): Promise<ProgressReply> {
+  return call(learnerId, "/answers", lesson ? { results, lesson } : { results });
 }
 
 /** The learner tested out of every level below `level`. */
-export function postPlacement(level: number): Promise<ProgressReply> {
-  return call("/placement", { level });
+export function postPlacement(learnerId: string, level: number): Promise<ProgressReply> {
+  return call(learnerId, "/placement", { level });
 }
 
 /** Start over. The server keeps the old progress as a backup. */
-export function resetProgress(): Promise<ProgressReply> {
-  return call("/reset", {});
+export function resetProgress(learnerId: string): Promise<ProgressReply> {
+  return call(learnerId, "/reset", {});
 }

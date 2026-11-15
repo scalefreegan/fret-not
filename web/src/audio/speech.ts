@@ -33,7 +33,7 @@ export interface NarrateOptions {
 /** Speak `text` in the learner's chosen voice. Starts fetching at once;
  *  playback begins once the (possibly cached) audio and its word timings
  *  are back. Returns a handle to pause, resume or stop it early. */
-export function narrate(text: string, opts: NarrateOptions = {}): NarrationHandle {
+export function narrate(learnerId: string, text: string, opts: NarrateOptions = {}): NarrationHandle {
   let audio: HTMLAudioElement | null = null;
   let words: readonly SpokenWord[] = [];
   let lastWord = -1;
@@ -77,7 +77,7 @@ export function narrate(text: string, opts: NarrateOptions = {}): NarrationHandl
     },
   };
 
-  void requestSpeech(text).then(
+  void requestSpeech(learnerId, text).then(
     ({ audioUrl, words: w }) => {
       if (stopped) return; // stop() came in before the request finished
       words = w;

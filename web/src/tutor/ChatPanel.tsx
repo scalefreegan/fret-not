@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import type { ChatCommit, ChatMessage, SettingsReply, TutorContext } from "../../shared/wire.ts";
 import { speakableText } from "../../shared/tts/speakable.ts";
+import { useAppData } from "../app-data.ts";
 import { useListen } from "../listen-data.ts";
 import { Button, inputClass } from "../ui.tsx";
 import { clearChatHistory, getChatHistory, getSettings, sendChat, setModel } from "./api.ts";
@@ -98,6 +99,7 @@ export default function ChatPanel({ context, onContentChanged }: { context: Tuto
   const [error, setError] = useState<string | null>(null);
   const [settings, setSettings] = useState<SettingsReply | null>(null);
   const listen = useListen();
+  const { learnerId } = useAppData();
   const tail = useRef<HTMLDivElement>(null);
   const box = useRef<HTMLTextAreaElement>(null);
   const abort = useRef<AbortController | null>(null);
@@ -110,12 +112,12 @@ export default function ChatPanel({ context, onContentChanged }: { context: Tuto
 
   useEffect(() => {
     let live = true;
-    getChatHistory().then((h) => live && setMessages(h.messages), (e) => live && setError((e as Error).message));
-    getSettings().then((s) => live && setSettings(s), (e) => live && setError((e as Error).message));
+    getChatHistory(learnerId).then((h) => live && setMessages(h.messages), (e) => live && setError((e as Error).message));
+    getSettings(learnerId).then((s) => live && setSettings(s), (e) => live && setError((e as Error).message));
     return () => {
       live = false;
     };
-  }, []);
+  }, [learnerId]);
 
   useEffect(() => {
     tail.current?.scrollIntoView({ block: "end" });
@@ -137,7 +139,7 @@ export default function ChatPanel({ context, onContentChanged }: { context: Tuto
     const ctrl = new AbortController();
     abort.current = ctrl;
     try {
-      await sendChat(message, ctxRef.current, {
+      await sendChat(learnerId, message, ctxRef.current, {
         heartbeat: (d) => setElapsed(d.elapsed),
         message: (d) => {
           setFixing(false);
@@ -179,7 +181,7 @@ export default function ChatPanel({ context, onContentChanged }: { context: Tuto
         setNote("Stopped. If the tutor had not finished, its work is thrown away (it writes in a separate copy) and nothing is committed; if it had just finished, the messages above show the commit.");
         window.setTimeout(() => {
           onContentChanged?.();
-          getChatHistory().then((h) => setMessages(h.messages), () => undefined);
+          getChatHistory(learnerId).then((h) => setMessages(h.messages), () => undefined);
         }, 1500);
       } else setError(String((e as Error).message || e));
     } finally {
@@ -193,7 +195,7 @@ export default function ChatPanel({ context, onContentChanged }: { context: Tuto
     setError(null);
     setNote(null);
     try {
-      await clearChatHistory();
+      await clearChatHistory(learnerId);
       setMessages([]);
     } catch (e) {
       setError((e as Error).message);
@@ -202,12 +204,15 @@ export default function ChatPanel({ context, onContentChanged }: { context: Tuto
 
   async function pickModel(model: string) {
     // Optimistic, so the select doesn't snap back while the PUT is in flight.
+    const was = settings;
     setSettings((s) => (s ? { ...s, model } : s));
     try {
-      setSettings(await setModel(model));
+      setSettings(await setModel(learnerId, model));
     } catch (e) {
       setError((e as Error).message);
-      setSettings(await getSettings().catch(() => null));
+      // What the server has now; failing that, what was shown before the
+      // pick. Never nothing: the picker must not vanish over a failed save.
+      setSettings(await getSettings(learnerId).catch(() => was));
     }
   }
 
