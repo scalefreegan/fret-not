@@ -18,13 +18,50 @@
 
 ## Features
 
-- **A guided path.** 49 short lessons in three linked tracks (theory, piano, guitar) across four written levels: Sound; Notes and layout; Rhythm and reading; Intervals, scales and first chords. Four more levels are outlined.
-- **Linked views.** The same note appears on the staff, the keyboard, the fretboard and in tab at once, and each pitch class keeps the same colour everywhere.
-- **Interactive physics.** A vibrating-string simulator, a harmonic mixer, live waveform and spectrum, consonance by frequency ratio, and how each instrument makes its sound.
-- **Exercises.** Generated and graded by a tested music engine: name what you see, ear training, play it on the virtual instrument, build it from a rule, tap a rhythm.
-- **Mastery and spaced review.** Tracked per concept, with level unlocks and a placement check.
-- **Lab and Sketchpad.** Open explorers, plus a place to write a melody over chords.
-- **A Tutor.** An embedded Claude agent that answers questions about the lesson in front of you and can write new lessons into `content/`, each change as a git commit. It writes only while `content/` has no uncommitted changes; otherwise it answers questions and says why it can't edit.
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/screenshots/guided-path.png" alt="The Path page: level 0 lessons in three tracks" width="100%">
+      <br><sub><i>The Path: level 0, with the next lesson picked for you.</i></sub>
+      <h3>A guided path</h3>
+      <p>49 short lessons in three linked tracks (theory, piano, guitar) across four written levels: Sound; Notes and layout; Rhythm and reading; Intervals, scales and first chords. Four more levels are outlined.</p>
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/screenshots/linked-views.png" alt="A C major chord on the staff, keyboard, fretboard and chord diagram" width="100%">
+      <br><sub><i>C major: root, third and fifth lit on every view, one colour per note.</i></sub>
+      <h3>Linked views</h3>
+      <p>The same notes appear on the staff, the keyboard, the fretboard and in tab or a chord diagram at once, and each pitch class keeps the same colour everywhere.</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/screenshots/exercise.png" alt="A graded practice question with the answer revealed" width="100%">
+      <br><sub><i>A practice question, answered and explained.</i></sub>
+      <h3>Exercises</h3>
+      <p>Generated and graded by a tested music engine: name what you see, ear training, play it on the virtual instrument, build it from a rule, tap a rhythm. Mastery is tracked per concept, with spaced review, level unlocks and a placement check.</p>
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/screenshots/vibrating-string.png" alt="A string with harmonics 1, 3 and 5 switched on" width="100%">
+      <br><sub><i>Harmonics 1, 3 and 5 sounding together on one string.</i></sub>
+      <h3>Interactive physics</h3>
+      <p>A vibrating-string simulator, a harmonic mixer, live waveform and spectrum, consonance by frequency ratio, and how each instrument makes its sound.</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/screenshots/sketchpad.png" alt="The Sketchpad: a melody written over four chords" width="100%">
+      <br><sub><i>The Sketchpad: a four-bar melody over C, G, Am and F.</i></sub>
+      <h3>Lab and Sketchpad</h3>
+      <p>The Lab holds open explorers with nothing scored. The Sketchpad is a place to write a melody over chords, drawn on the staff as you go.</p>
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/screenshots/tutor.png" alt="The Tutor drawer answering a question about the open lesson" width="100%">
+      <br><sub><i>The Tutor, answering a question about the lesson on screen.</i></sub>
+      <h3>A Tutor</h3>
+      <p>An embedded Claude agent that answers questions about the lesson in front of you and can write new lessons into <code>content/</code>, each change as a git commit. It writes only while <code>content/</code> has no uncommitted changes; otherwise it answers questions and says why it can't edit.</p>
+    </td>
+  </tr>
+</table>
 
 ## How it works
 
