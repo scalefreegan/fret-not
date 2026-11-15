@@ -140,7 +140,29 @@ function Shell({ account }: { account: AccountActions }) {
         <main className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain" id="main-scroll">
           {saver.status === "failed" && <UnsavedBanner count={saver.unsaved} lesson={saver.pending} error={saver.error} onRetry={() => void saver.retry()} />}
           {error && content && <p className="mx-4 mt-4 rounded-lg border border-bad bg-bad-soft px-4 py-2 text-fg sm:mx-5">{error}</p>}
-          {recovered && <p className="mx-4 mt-4 rounded-lg border border-warn bg-warn-soft px-4 py-2 text-fg sm:mx-5">{account.learner.name}'s saved progress was damaged. What could be read was kept and the rest starts fresh; the original is kept in the database as backup {recoveredTo ? <code className="font-mono text-sm break-all">{recoveredTo}</code> : "in progress_backups"} (docs/DATA.md says how to look at it).</p>}
+          {recovered && (
+            <p className="mx-4 mt-4 rounded-lg border border-warn bg-warn-soft px-4 py-2 text-fg sm:mx-5">
+              {account.learner.name}'s saved progress was damaged. {Object.keys(progress.concepts).length || Object.keys(progress.lessons).length ? "What could be read was kept and the rest starts fresh" : "Nothing in it could be read, so progress starts fresh"}; the original is kept in the database as backup {recoveredTo ? <code className="font-mono text-sm break-all">{recoveredTo}</code> : "in progress_backups"} (docs/DATA.md says how to look at it).
+            </p>
+          )}
+          {account.imported && (
+            <div role="status" className="mx-4 mt-4 rounded-lg border border-warn bg-warn-soft px-4 py-2 text-fg sm:mx-5" data-testid="import-report">
+              <p className="font-semibold">Some of what this copy of Fret Not had saved before logins could not be brought in:</p>
+              <ul className="mt-1 list-disc pl-5">
+                {account.imported.problems.map((p) => (
+                  <li key={p}>{p}</li>
+                ))}
+              </ul>
+              {account.imported.backupId && (
+                <p className="mt-1 text-sm text-fg-2">
+                  The damaged progress is kept as backup <code className="font-mono break-all">{account.imported.backupId}</code> (docs/DATA.md says how to look at it). The files under data/ are untouched.
+                </p>
+              )}
+              <Button size="sm" variant="ghost" className="mt-1" onClick={account.onDismissImported}>
+                Dismiss
+              </Button>
+            </div>
+          )}
           <ErrorBoundary key={`${route.name}/${route.arg ?? ""}`} label="page">{page}</ErrorBoundary>
         </main>
         <nav className="z-10 flex shrink-0 border-t border-line bg-panel pb-[env(safe-area-inset-bottom)] sm:hidden" aria-label="Sections">

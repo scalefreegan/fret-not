@@ -18,7 +18,7 @@ import { PASSWORD, addUser, client, tab } from "./http-session.mjs";
 import { freshDb } from "./testdb.mjs";
 import { tokenHash } from "../auth.mjs";
 import { disableUser, enableUser, setPassword } from "../db/accounts.ts";
-import { authSessions, learners, users } from "../db/schema.ts";
+import { authSessions, learners, progressBackups, users } from "../db/schema.ts";
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "fret-not-auth-"));
 const dataDir = path.join(tmp, "data");
@@ -124,6 +124,7 @@ test("first run: what data/ held before logins becomes the first learner's, read
     const c = anon();
     const r = await c.call("POST", "/api/auth/first-run", { username: "robin", password: PASSWORD, learnerName: "Sam" });
     assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.deepEqual(r.body.imported, { problems: ["2 lines of data/chat.jsonl could not be read and were left out of the tutor chat."], backupId: null }, "what was left out is said once");
     c.learnerId = r.body.learner.id;
     const got = (await c.call("GET", "/api/progress")).body.progress;
     assert.equal(got.profile, c.learnerId, "the progress is the learner's now");
@@ -139,17 +140,39 @@ test("first run: what data/ held before logins becomes the first learner's, read
     assert.deepEqual((await lee.c.call("GET", "/api/progress")).body.progress.concepts, {});
     assert.deepEqual((await lee.c.call("GET", "/api/chat/history")).body.messages, []);
 
-    // Unreadable files are left out, not a reason to refuse.
-    await freshRoutes();
+    // Unreadable files are left out, not a reason to refuse; a damaged
+    // progress is kept whole as a backup; each is reported.
+    const { db: db2 } = await freshRoutes();
     fs.writeFileSync(path.join(dataDir, "settings.json"), "{ not json");
     fs.writeFileSync(path.join(dataDir, "profiles/default/progress.json"), JSON.stringify({ version: 9 }));
     const d = anon();
     const again = await d.call("POST", "/api/auth/first-run", { username: "kim", password: PASSWORD });
     assert.equal(again.status, 200, JSON.stringify(again.body));
     d.learnerId = again.body.learner.id;
+    const report = again.body.imported;
+    assert.equal(report.problems.length, 3, report.problems.join(" | "));
+    assert.match(report.problems.join(" "), /settings\.json could not be read[\s\S]*profiles\/default\/progress\.json could not be read, so progress starts fresh/);
+    const [backup] = await db2.select().from(progressBackups);
+    assert.deepEqual([backup.id, backup.reason, backup.data, backup.learnerId], [report.backupId, "corrupt", { version: 9 }, d.learnerId]);
     assert.deepEqual((await d.call("GET", "/api/progress")).body.progress.concepts, {});
     assert.equal((await d.call("GET", "/api/settings")).body.model, "claude-sonnet-5-5");
     assert.equal((await d.call("GET", "/api/chat/history")).body.messages.length, 2);
+
+    // Partly damaged: what can be read is kept, and the original backed up.
+    // A file that cannot be opened (not a missing one) is reported too.
+    const { db: db3 } = await freshRoutes();
+    fs.rmSync(path.join(dataDir, "settings.json"));
+    fs.mkdirSync(path.join(dataDir, "settings.json"));
+    const partly = { ...progress, concepts: { ...progress.concepts, beta: { ...progress.concepts.alpha, box: "soon" } } };
+    fs.writeFileSync(path.join(dataDir, "profiles/default/progress.json"), JSON.stringify(partly));
+    const e = anon();
+    const third = await e.call("POST", "/api/auth/first-run", { username: "max", password: PASSWORD });
+    assert.equal(third.status, 200, JSON.stringify(third.body));
+    assert.match(third.body.imported.problems.join(" "), /settings\.json could not be opened \(EISDIR\)[\s\S]*was partly damaged/);
+    e.learnerId = third.body.learner.id;
+    assert.deepEqual(Object.keys((await e.call("GET", "/api/progress")).body.progress.concepts), ["alpha"]);
+    const [kept] = await db3.select().from(progressBackups);
+    assert.deepEqual([kept.id, kept.data], [third.body.imported.backupId, partly]);
   } finally {
     fs.rmSync(dataDir, { recursive: true, force: true });
   }

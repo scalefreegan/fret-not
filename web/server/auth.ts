@@ -8,7 +8,7 @@ import {
   renameLearner, setSessionLearner, slideSession, type Learner,
 } from "../../scripts/db/accounts.ts";
 import type {
-  AuthUser, ErrorCode, FirstRunRequest, LearnerHeader, LearnerInfo, LearnerReply, LearnerRequest, LearnersReply, LoginRequest, MeReply, PickLearnerRequest,
+  AuthUser, ErrorCode, FirstRunReply, FirstRunRequest, LearnerHeader, LearnerInfo, LearnerReply, LearnerRequest, LearnersReply, LoginRequest, MeReply, PickLearnerRequest,
 } from "../shared/wire.ts";
 import { rawDb } from "./db.ts";
 import { readFirstRunSeed } from "./seed.ts";
@@ -240,11 +240,13 @@ export async function handleFirstRun(req: IncomingMessage, res: ServerResponse):
   const name = body && typeof body === "object" && typeof body.learnerName === "string" && body.learnerName.trim() ? learnerName(body.learnerName) : username;
   // A cheap refusal before the scrypt; the locked check below is the real one.
   if (await hasUsers(rawDb())) throw new HttpError(409, "an account already exists; log in instead");
-  const user = await createFirstAdmin(rawDb(), { username, passwordHash: await hashPassword(password) }, readFirstRunSeed(name));
-  if (!user) throw new HttpError(409, "an account already exists; log in instead");
+  const seed = readFirstRunSeed(name);
+  const made = await createFirstAdmin(rawDb(), { username, passwordHash: await hashPassword(password) }, seed);
+  if (!made) throw new HttpError(409, "an account already exists; log in instead");
+  const { user } = made;
   const [learner] = await listLearners(rawDb(), user.id);
   const ctx = await startSession(req, res, { id: user.id, username: user.username, isAdmin: user.isAdmin }, learner ?? null);
-  sendJson(res, 200, await meReply(ctx));
+  sendJson(res, 200, { ...(await meReply(ctx)), imported: { problems: seed.problems, backupId: made.backupId } } satisfies FirstRunReply);
 }
 
 /** /api/auth/logout and /api/auth/learner, both behind a session. */

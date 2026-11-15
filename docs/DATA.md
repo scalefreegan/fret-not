@@ -77,7 +77,8 @@ npm run user -- enable <name>
 npm run user -- admin <name> [--off]
 ```
 
-A new account has no learners; the app asks for one after the first login.
+`add` refuses while there are no accounts: the first is made in the app. A new
+account has no learners; the app asks for one after the first login.
 
 **Admin** means one thing: the tutor may write lessons into `content/` (the
 worktree-and-fast-forward rules in CLAUDE.md), and the account may choose the
@@ -132,7 +133,10 @@ files under `data/` held before there were logins (`web/server/seed.ts`):
 | `data/chat.jsonl` | the learner's tutor chat |
 
 The files are read once and never changed or deleted: they stay as the
-backup. Anything missing or unreadable is left out, never a reason to refuse.
+backup. A missing file is nothing to import. Anything unreadable is left out
+(and logged), never a reason to refuse; a progress that was unreadable or
+needed repairs is also kept whole in `progress_backups` ("corrupt"). The
+first run's reply lists what was left out, and the app shows it once.
 `data/` otherwise holds only the Listen audio cache (`data/tts-cache/`).
 
 ## Hosting

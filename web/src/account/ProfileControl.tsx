@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { AuthUser, LearnerInfo } from "../../shared/wire.ts";
+import type { AuthUser, FirstRunReply, LearnerInfo } from "../../shared/wire.ts";
 import { useAppData } from "../app-data.ts";
 import { Button, cx } from "../ui.tsx";
 
@@ -17,6 +17,9 @@ export interface AccountActions {
   onLogout: () => void;
   /** A switch the server refused, shown in the menu. */
   switchError: string | null;
+  /** What the first run could not import from data/, shown once. */
+  imported: FirstRunReply["imported"] | null;
+  onDismissImported: () => void;
 }
 
 export function ProfileControl({ user, learner, learners, onSwitchLearner, onManageLearners, onLogout, switchError }: AccountActions) {

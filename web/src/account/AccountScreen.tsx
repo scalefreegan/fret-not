@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from "react";
-import type { MeReply } from "../../shared/wire.ts";
+import type { FirstRunReply, MeReply } from "../../shared/wire.ts";
 import { createFirstAccount, login } from "../api/auth.ts";
 import { Button, Card, inputClass } from "../ui.tsx";
 
@@ -10,7 +10,7 @@ import { Button, Card, inputClass } from "../ui.tsx";
 
 const label = "flex flex-col gap-1 text-sm font-medium text-fg-2";
 
-export function AccountScreen({ kind, onDone }: { kind: "login" | "first-run"; onDone: (me: MeReply) => void }) {
+export function AccountScreen({ kind, onDone }: { kind: "login" | "first-run"; onDone: (me: MeReply | FirstRunReply) => void }) {
   const first = kind === "first-run";
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");

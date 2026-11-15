@@ -16,7 +16,7 @@ import { randomUUID } from "node:crypto";
 import { and, asc, eq, gt, isNull, sql } from "drizzle-orm";
 import { emptyProgress, type Progress } from "../../web/shared/progress.ts";
 import { forLearner, forUser, type Db } from "./owned.ts";
-import { authSessions, chatMessages, learners, userSettings, users } from "./schema.ts";
+import { authSessions, chatMessages, learners, progressBackups, userSettings, users } from "./schema.ts";
 
 export type User = typeof users.$inferSelect;
 export type Learner = typeof learners.$inferSelect;
@@ -36,6 +36,16 @@ export async function findUserByUsername(db: Db, username: string): Promise<User
 export async function hasUsers(db: Db): Promise<boolean> {
   const rows = await db.select({ id: users.id }).from(users).limit(1);
   return rows.length > 0;
+}
+
+/** Why `npm run user -- add` must not make the very first account, or null
+ *  once there is one: the first account is the admin, and it is the one
+ *  that imports what data/ held before logins (web/server/seed.ts). Made
+ *  from the command line it would do neither, and the app's first-run
+ *  screen would never appear to do it. */
+export async function cliAddRefusal(db: Db): Promise<string | null> {
+  if (await hasUsers(db)) return null;
+  return "there are no accounts yet: create the first one in the app (open http://localhost:38600 on this Mac). It becomes the admin and brings in the progress, Listen settings and tutor chat this copy already has; add other people here after that.";
 }
 
 /** The CLI's `add`. A taken username is the unique violation (23505). */
@@ -104,6 +114,11 @@ export interface FirstRunSeed {
   /** The account's tutor model, or null for the default. */
   model: string | null;
   messages: StoredMessage[];
+  /** The stored progress as found, when it was unreadable or the repair
+   *  rules had to change it: kept whole in progress_backups ("corrupt"). */
+  damagedProgress?: unknown;
+  /** What could not be imported, in sentences for the owner. */
+  problems: string[];
 }
 
 /**
@@ -114,7 +129,7 @@ export interface FirstRunSeed {
  * admin and the other sees a user and gets null. All or nothing: a seed that
  * fails to write leaves no half-made admin behind.
  */
-export async function createFirstAdmin(db: Db, account: { username: string; passwordHash: string }, seed: FirstRunSeed): Promise<User | null> {
+export async function createFirstAdmin(db: Db, account: { username: string; passwordHash: string }, seed: FirstRunSeed): Promise<{ user: User; backupId: string | null } | null> {
   return db.transaction(async (tx) => {
     await tx.execute(sql`lock table ${users} in share row exclusive mode`);
     if (await hasUsers(tx)) return null;
@@ -128,7 +143,12 @@ export async function createFirstAdmin(db: Db, account: { username: string; pass
     if (seed.messages.length) {
       await forLearner(tx, learner.id).insert(chatMessages, seed.messages.map((m) => ({ role: m.role, text: m.text, ...(validDate(m.ts) ? { ts: new Date(m.ts) } : {}) })));
     }
-    return user;
+    let backupId: string | null = null;
+    if (seed.damagedProgress !== undefined) {
+      const [backup] = await forLearner(tx, learner.id).insert(progressBackups, { reason: "corrupt", data: seed.damagedProgress ?? {} });
+      backupId = backup.id;
+    }
+    return { user, backupId };
   });
 }
 

@@ -1,4 +1,4 @@
-import type { FirstRunRequest, LearnerReply, LearnerRequest, LoginRequest, MeReply, PickLearnerRequest } from "../../shared/wire.ts";
+import type { FirstRunReply, FirstRunRequest, LearnerReply, LearnerRequest, LoginRequest, MeReply, PickLearnerRequest } from "../../shared/wire.ts";
 import { json, request } from "./client.ts";
 
 // Client for /api/auth and /api/learners (web/server/auth.ts).
@@ -14,8 +14,8 @@ export function login(username: string, password: string): Promise<MeReply> {
 }
 
 /** The first account (an admin), only while there are none, only on this Mac. */
-export function createFirstAccount(username: string, password: string, learnerName?: string): Promise<MeReply> {
-  return request<MeReply>("/api/auth/first-run", json({ username, password, ...(learnerName?.trim() ? { learnerName } : {}) } satisfies FirstRunRequest));
+export function createFirstAccount(username: string, password: string, learnerName?: string): Promise<FirstRunReply> {
+  return request<FirstRunReply>("/api/auth/first-run", json({ username, password, ...(learnerName?.trim() ? { learnerName } : {}) } satisfies FirstRunRequest));
 }
 
 export function logout(): Promise<{ ok: true }> {

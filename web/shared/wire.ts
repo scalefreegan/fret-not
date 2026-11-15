@@ -241,6 +241,13 @@ export interface LoginRequest {
   password: string;
 }
 
+/** The reply of POST /api/auth/first-run: who is logged in, and what of the
+ *  files under data/ could not be imported (docs/DATA.md §First run), shown
+ *  once. `backupId`: the progress_backups row holding a damaged progress. */
+export interface FirstRunReply extends MeReply {
+  imported: { problems: string[]; backupId: string | null };
+}
+
 /** POST /api/auth/first-run: the admin account and its first learner's name
  *  (the username when left out). */
 export interface FirstRunRequest extends LoginRequest {
