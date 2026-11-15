@@ -15,7 +15,6 @@
   <br>
   <sub><i>One note, four views: staff, keyboard, fretboard and tab, in sync.</i></sub>
 </p>
-<!-- TODO: generate docs/hero.png from docs/hero-image-prompt.md -->
 
 ## Features
 
