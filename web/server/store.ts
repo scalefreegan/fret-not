@@ -1,164 +1,143 @@
-import fs from "node:fs";
 import path from "node:path";
+import { and, asc, desc, eq, isNull, lt, sql } from "drizzle-orm";
 import { DEFAULT_MODEL, isAgentModel } from "../../scripts/claude.mjs";
+import { getStoredModel, saveModel, validDate } from "../../scripts/db/accounts.ts";
+import { forLearner, forUser } from "../../scripts/db/owned.ts";
+import { chatMessages, learners } from "../../scripts/db/schema.ts";
 import type { ChatMessage } from "../shared/wire.ts";
+import { rawDb } from "./db.ts";
 import { REPO_ROOT } from "./loader.ts";
 import { DEFAULT_ELEVEN_MODEL, isElevenModel } from "./tts-models.ts";
 
-// The tutor's runtime state: the chat transcript and the model setting.
-// Plain files under data/ (gitignored, created on demand), read on every
-// call — the app is single-user and these are tiny, so a cache would only
-// add a way for the file and the process to disagree.
+// Per-learner and per-account state that is not progress (docs/DATA.md):
 //
-//   data/chat.jsonl      one {role, text, ts} per line, appended per message;
-//                        trimmed to its newest messages when it grows large
-//   data/settings.json   {model, listenMode, ttsVoiceId, ttsModelId}
+//   chat_messages               the learner's tutor transcript, trimmed to its
+//                               newest messages when it grows large
+//   learners.listen_mode,       the learner's Listen mode: on/off, voice, model
+//   .tts_voice_id, .tts_model_id
+//   user_settings.model         the account's tutor model
+//
+// Read on every call: they are tiny, and a cache would only add a way for two
+// tabs to disagree. Before logins these were data/chat.jsonl and
+// data/settings.json; the first admin's first learner is seeded from them
+// once (seed.ts), and nothing reads them after that. Every query goes
+// through an owner scope (scripts/db/owned.ts).
 
 /** FRET_DATA_DIR when set (resolved against the repo root, like the content
- *  override), else <repo>/data. Per call, so a test can point it at a temp
- *  dir. */
+ *  override), else <repo>/data: what is still on disk (the shared TTS cache)
+ *  and the files the first run imports. Per call, so a test can point it at
+ *  a temp dir. */
 export function dataDir(): string {
   const override = process.env.FRET_DATA_DIR;
   return override ? path.resolve(REPO_ROOT, override) : path.join(REPO_ROOT, "data");
 }
 
-const historyPath = () => path.join(dataDir(), "chat.jsonl");
-const settingsPath = () => path.join(dataDir(), "settings.json");
+/* ---------------------------------- chat ---------------------------------- */
 
-const ROLES = new Set(["user", "assistant", "commit", "note"]);
-
-/** The transcript is a convenience, not a record: past this size the oldest
- *  messages are dropped, keeping the newest HISTORY_KEEP_BYTES worth. */
+/** The transcript is a convenience, not a record: past this size (of message
+ *  text, per learner) the oldest messages are dropped, keeping the newest
+ *  HISTORY_KEEP_BYTES worth. */
 export const HISTORY_MAX_BYTES = 1_000_000;
 export const HISTORY_KEEP_BYTES = 500_000;
 
-/** Write whole, then rename: a crash mid-write leaves the old file. */
-function writeAtomic(file: string, text: string): void {
-  const tmp = `${file}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, text);
-  fs.renameSync(tmp, file);
+const toMessage = (r: typeof chatMessages.$inferSelect): ChatMessage => ({ role: r.role, text: r.text, ts: r.ts.toISOString() });
+
+/** The learner's tutor chat, oldest first. With `last`, only the newest
+ *  `last` messages. */
+export async function readHistory(learnerId: string, last?: number): Promise<ChatMessage[]> {
+  const mine = forLearner(rawDb(), learnerId);
+  const rows = last === undefined
+    ? await mine.list(chatMessages, undefined, { orderBy: asc(chatMessages.seq) })
+    : (await mine.list(chatMessages, undefined, { orderBy: desc(chatMessages.seq), limit: last })).reverse();
+  return rows.map(toMessage);
 }
 
-export function readHistory(): ChatMessage[] {
-  let text: string;
-  try {
-    text = fs.readFileSync(historyPath(), "utf8");
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") return [];
-    throw e;
-  }
-  const out: ChatMessage[] = [];
-  for (const line of text.split("\n")) {
-    if (!line.trim()) continue;
-    // A torn last line (the server died mid-append) is dropped, not fatal:
-    // the transcript is a convenience, the content is the product.
-    try {
-      const m = JSON.parse(line) as Partial<ChatMessage>;
-      if (typeof m.role === "string" && ROLES.has(m.role) && typeof m.text === "string") {
-        out.push({ role: m.role, text: m.text, ts: typeof m.ts === "string" ? m.ts : "" });
-      }
-    } catch {
-      /* skip */
-    }
-  }
-  return out;
-}
-
-export function appendHistory(message: ChatMessage, { maxBytes = HISTORY_MAX_BYTES, keepBytes = HISTORY_KEEP_BYTES } = {}): void {
-  fs.mkdirSync(dataDir(), { recursive: true });
-  const file = historyPath();
-  fs.appendFileSync(file, `${JSON.stringify(message)}\n`);
-  if (fs.statSync(file).size <= maxBytes) return;
-  // Too big: keep the newest lines that fit in keepBytes (always at least
+export async function appendHistory(learnerId: string, message: ChatMessage, { maxBytes = HISTORY_MAX_BYTES, keepBytes = HISTORY_KEEP_BYTES } = {}): Promise<void> {
+  const db = rawDb();
+  const mine = forLearner(db, learnerId);
+  await mine.insert(chatMessages, { role: message.role, text: message.text, ...(validDate(message.ts) ? { ts: new Date(message.ts) } : {}) });
+  const [{ bytes }] = await db
+    .select({ bytes: sql<number>`coalesce(sum(octet_length(${chatMessages.text})), 0)::bigint` })
+    .from(chatMessages)
+    .where(mine.where(chatMessages));
+  if (Number(bytes) <= maxBytes) return;
+  // Too big: keep the newest messages that fit in keepBytes (always at least
   // the one just written).
-  const lines = readHistory().map((m) => `${JSON.stringify(m)}\n`);
-  let size = 0;
-  let from = lines.length;
-  while (from > 0 && (from === lines.length || size + Buffer.byteLength(lines[from - 1]) <= keepBytes)) size += Buffer.byteLength(lines[--from]);
-  writeAtomic(file, lines.slice(from).join(""));
-}
-
-export function clearHistory(): void {
-  try {
-    fs.unlinkSync(historyPath());
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+  const sizes = await db
+    .select({ seq: chatMessages.seq, size: sql<number>`octet_length(${chatMessages.text})` })
+    .from(chatMessages)
+    .where(mine.where(chatMessages))
+    .orderBy(desc(chatMessages.seq));
+  let kept = 0;
+  let oldestKept = sizes[0].seq;
+  for (const [i, r] of sizes.entries()) {
+    if (i > 0 && kept + Number(r.size) > keepBytes) break;
+    kept += Number(r.size);
+    oldestKept = r.seq;
   }
+  await mine.remove(chatMessages, lt(chatMessages.seq, oldestKept));
 }
 
-/** The model tutor runs use. Anything unreadable or outside the offered list
- *  falls back to the default, so a stale settings file can never spawn a
- *  model the UI doesn't offer. Other keys in settings.json (another part of
- *  the app may keep its own there) are left alone. */
-export function getModel(): string {
-  try {
-    const raw = JSON.parse(fs.readFileSync(settingsPath(), "utf8")) as { model?: unknown };
-    return isAgentModel(raw.model) ? raw.model : DEFAULT_MODEL;
-  } catch {
-    return DEFAULT_MODEL;
-  }
+export async function clearHistory(learnerId: string): Promise<void> {
+  await forLearner(rawDb(), learnerId).removeAllOwned(chatMessages);
 }
 
-export function setModel(model: string): string {
+/* --------------------------------- the model ------------------------------ */
+
+/** The model this account's tutor runs use. Anything outside the offered
+ *  list falls back to the default, so a stale row can never spawn a model
+ *  the UI doesn't offer. */
+export async function getModel(userId: string): Promise<string> {
+  const model = await getStoredModel(rawDb(), userId);
+  return isAgentModel(model) ? model : DEFAULT_MODEL;
+}
+
+export async function setModel(userId: string, model: string): Promise<string> {
   if (!isAgentModel(model)) throw new Error(`unknown model: ${model}`);
-  patchSettings({ model });
+  await saveModel(rawDb(), userId, model);
   return model;
 }
 
-/** settings.json as an object, or {} if it does not exist or is unreadable
- *  (a hand-edited file with a syntax error loses its extra keys rather than
- *  crashing the app — the same spirit as getModel's fallback). */
-function readSettingsRaw(): Record<string, unknown> {
-  try {
-    const raw: unknown = JSON.parse(fs.readFileSync(settingsPath(), "utf8"));
-    if (raw && typeof raw === "object" && !Array.isArray(raw)) return raw as Record<string, unknown>;
-  } catch {
-    /* no file yet, or unreadable: start fresh */
-  }
-  return {};
+/* ------------------------------- Listen mode ------------------------------ */
+
+/** Who a Listen setting belongs to: the learner, through its account. */
+export interface LearnerRef {
+  userId: string;
+  learnerId: string;
 }
 
-/** Merge `patch` into settings.json, keeping every key some other setting
- *  (the tutor's model, these TTS fields, anything later) already put there. */
-function patchSettings(patch: Record<string, unknown>): void {
-  fs.mkdirSync(dataDir(), { recursive: true });
-  writeAtomic(settingsPath(), `${JSON.stringify({ ...readSettingsRaw(), ...patch }, null, 2)}\n`);
+export interface ListenSettings {
+  /** Off until the learner turns it on, even once a voice is chosen. */
+  listenMode: boolean;
+  /** The chosen ElevenLabs voice id, or null until the learner has picked
+   *  one (Listen mode has nothing to speak with until then: the UI says so
+   *  rather than guess a voice). Not validated against the live catalog. */
+  ttsVoiceId: string | null;
+  /** The ElevenLabs model; a stale or unknown stored id reads as the default,
+   *  so it can never reach the API. */
+  ttsModelId: string;
 }
 
-/** Whether Listen mode (TTS read-aloud) is turned on. Off until the learner
- *  turns it on, even once a voice is chosen. */
-export function getListenMode(): boolean {
-  return readSettingsRaw().listenMode === true;
-}
-export function setListenMode(on: boolean): boolean {
-  patchSettings({ listenMode: on });
-  return on;
+const liveLearner = (ref: LearnerRef) => and(eq(learners.id, ref.learnerId), isNull(learners.archivedAt))!;
+
+/** The learner's Listen settings; the defaults for a learner that is gone. */
+export async function getListenSettings(ref: LearnerRef): Promise<ListenSettings> {
+  const row = await forUser(rawDb(), ref.userId).get(learners, liveLearner(ref));
+  return {
+    listenMode: row?.listenMode === true,
+    ttsVoiceId: typeof row?.ttsVoiceId === "string" && row.ttsVoiceId ? row.ttsVoiceId : null,
+    ttsModelId: isElevenModel(row?.ttsModelId) ? row.ttsModelId : DEFAULT_ELEVEN_MODEL,
+  };
 }
 
-/** The chosen ElevenLabs voice id, or null until the learner has picked one
- *  (Listen mode has nothing to speak with until then — the UI should say
- *  so rather than guess a voice). Not validated against the live voice
- *  catalog here: that would mean a network call on every settings read, and
- *  an id ElevenLabs later removes should surface as a clear "pick again" in
- *  the UI, not silently fall back to another voice. */
-export function getTtsVoiceId(): string | null {
-  const raw = readSettingsRaw().ttsVoiceId;
-  return typeof raw === "string" && raw ? raw : null;
-}
-export function setTtsVoiceId(voiceId: string | null): string | null {
-  patchSettings({ ttsVoiceId: voiceId });
-  return voiceId;
-}
-
-/** The ElevenLabs synthesis model TTS requests use. Falls back to the
- *  default exactly like getModel: a stale or unknown id in the file can
- *  never reach the API. */
-export function getTtsModelId(): string {
-  const raw = readSettingsRaw().ttsModelId;
-  return isElevenModel(raw) ? raw : DEFAULT_ELEVEN_MODEL;
-}
-export function setTtsModelId(modelId: string): string {
-  if (!isElevenModel(modelId)) throw new Error(`unknown TTS model: ${modelId}`);
-  patchSettings({ ttsModelId: modelId });
-  return modelId;
+/** Change some of the learner's Listen settings; each column is written on
+ *  its own, so two saves of different settings at once both land. */
+export async function setListenSettings(ref: LearnerRef, patch: Partial<ListenSettings>): Promise<ListenSettings> {
+  if (patch.ttsModelId !== undefined && !isElevenModel(patch.ttsModelId)) throw new Error(`unknown TTS model: ${patch.ttsModelId}`);
+  const set: Partial<typeof learners.$inferInsert> = {};
+  if (patch.listenMode !== undefined) set.listenMode = patch.listenMode;
+  if (patch.ttsVoiceId !== undefined) set.ttsVoiceId = patch.ttsVoiceId || null;
+  if (patch.ttsModelId !== undefined) set.ttsModelId = patch.ttsModelId;
+  if (Object.keys(set).length) await forUser(rawDb(), ref.userId).update(learners, set, liveLearner(ref));
+  return getListenSettings(ref);
 }

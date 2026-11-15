@@ -12,6 +12,8 @@ import { contextNote, fixPrompt, historyPrompt, historyWindow, interruptedNote, 
 import { REPO_ROOT } from "./loader.ts";
 import { commitSubject, heldNote, isContentFile, readOnlyNote, strayWrites, unsafePaths } from "./turn.ts";
 import { appendHistory, clearHistory, dataDir, getModel, readHistory, setModel } from "./store.ts";
+import { testLearner } from "./test-db.ts";
+import { userSettings } from "../../scripts/db/schema.ts";
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "fret-not-tutor-"));
 const realData = path.join(REPO_ROOT, "data");
@@ -257,37 +259,47 @@ test("commit subject comes from the Changed: line", () => {
   assert.equal(commitSubject(`Changed: ${"x".repeat(200)}`).length, 72);
 });
 
-test("history store: append, read, torn lines, clear, model setting", () => {
-  assert.deepEqual(readHistory(), []);
-  appendHistory({ role: "user", text: "hi", ts: "t1" });
-  appendHistory({ role: "note", text: "refused", ts: "t2" });
-  fs.appendFileSync(path.join(dataDir(), "chat.jsonl"), '{"role":"weird","text":"x"}\n{"role":"assistant","text":"tor');
-  assert.deepEqual(readHistory(), [{ role: "user", text: "hi", ts: "t1" }, { role: "note", text: "refused", ts: "t2" }]);
-  clearHistory();
-  clearHistory(); // idempotent
-  assert.deepEqual(readHistory(), []);
+test("history store: per learner, in order, cleared, trimmed; the model is per account", async () => {
+  const t = await testLearner();
+  try {
+    const me = t.ctx.learner.id;
+    const other = await t.other();
+    assert.deepEqual(await readHistory(me), []);
+    await appendHistory(me, { role: "user", text: "hi", ts: "2026-03-01T10:00:00.000Z" });
+    await appendHistory(me, { role: "note", text: "refused", ts: "not a date" });
+    await appendHistory(other.learner.id, { role: "user", text: "theirs", ts: "" });
+    const mine = await readHistory(me);
+    assert.deepEqual(mine.map((m) => [m.role, m.text]), [["user", "hi"], ["note", "refused"]]);
+    assert.equal(mine[0].ts, "2026-03-01T10:00:00.000Z");
+    assert.ok(!Number.isNaN(Date.parse(mine[1].ts)), "a bad timestamp is replaced by the time it was stored");
+    assert.deepEqual((await readHistory(me, 1)).map((m) => m.text), ["refused"], "`last` gives the newest, oldest first");
+    await clearHistory(me);
+    await clearHistory(me); // idempotent
+    assert.deepEqual(await readHistory(me), []);
+    assert.deepEqual((await readHistory(other.learner.id)).map((m) => m.text), ["theirs"], "another learner's chat is untouched");
 
-  assert.equal(getModel(), "claude-sonnet-5-5");
-  fs.writeFileSync(path.join(dataDir(), "settings.json"), JSON.stringify({ model: "gpt-9", other: 1 }));
-  assert.equal(getModel(), "claude-sonnet-5-5"); // a stale id never reaches the CLI
-  assert.equal(setModel("claude-opus-5-5"), "claude-opus-5-5");
-  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dataDir(), "settings.json"), "utf8")), { model: "claude-opus-5-5", other: 1 });
-  assert.throws(() => setModel("nope"), /unknown model/);
-  assert.deepEqual(fs.readdirSync(dataDir()).filter((f) => f.endsWith(".tmp")), [], "settings are written by rename, with no temp file left");
+    assert.equal(await getModel(t.ctx.user.id), "claude-sonnet-5-5");
+    await t.db.insert(userSettings).values({ userId: t.ctx.user.id, model: "gpt-9" });
+    assert.equal(await getModel(t.ctx.user.id), "claude-sonnet-5-5"); // a stale id never reaches the CLI
+    assert.equal(await setModel(t.ctx.user.id, "claude-opus-5-5"), "claude-opus-5-5");
+    assert.equal(await getModel(t.ctx.user.id), "claude-opus-5-5");
+    assert.equal(await getModel(other.user.id), "claude-sonnet-5-5", "another account keeps its own");
+    await assert.rejects(setModel(t.ctx.user.id, "nope"), /unknown model/);
 
-  // The transcript is trimmed to its newest messages once it grows large.
-  clearHistory();
-  for (let i = 0; i < 30; i++) appendHistory({ role: "user", text: `${i}:${"x".repeat(100)}`, ts: "" }, { maxBytes: 2000, keepBytes: 1000 });
-  const kept = readHistory();
-  assert.ok(fs.statSync(path.join(dataDir(), "chat.jsonl")).size <= 2000);
-  assert.ok(kept.length >= 5 && kept.length < 30, String(kept.length));
-  assert.match(kept.at(-1)!.text, /^29:/);
-  assert.deepEqual(kept.map((m) => Number(m.text.split(":")[0])), Array.from({ length: kept.length }, (_, i) => 30 - kept.length + i), "a contiguous tail, oldest first");
-  // One message bigger than the whole budget is still kept (never an empty file).
-  appendHistory({ role: "assistant", text: "y".repeat(5000), ts: "" }, { maxBytes: 2000, keepBytes: 1000 });
-  assert.deepEqual(readHistory().map((m) => m.text.length), [5000]);
-  clearHistory();
-  assert.ok(!fs.existsSync(path.join(realData, "chat.jsonl")) || fs.statSync(path.join(realData, "chat.jsonl")).mtimeMs < Date.now() - 1000, "the real data/ was not written");
+    // The transcript is trimmed to its newest messages once it grows large.
+    for (let i = 0; i < 30; i++) await appendHistory(me, { role: "user", text: `${i}:${"x".repeat(100)}`, ts: "" }, { maxBytes: 2000, keepBytes: 1000 });
+    const kept = await readHistory(me);
+    assert.ok(kept.reduce((n, m) => n + Buffer.byteLength(m.text), 0) <= 2000);
+    assert.ok(kept.length >= 5 && kept.length < 30, String(kept.length));
+    assert.match(kept.at(-1)!.text, /^29:/);
+    assert.deepEqual(kept.map((m) => Number(m.text.split(":")[0])), Array.from({ length: kept.length }, (_, i) => 30 - kept.length + i), "a contiguous tail, oldest first");
+    // One message bigger than the whole budget is still kept (never empty).
+    await appendHistory(me, { role: "assistant", text: "y".repeat(5000), ts: "" }, { maxBytes: 2000, keepBytes: 1000 });
+    assert.deepEqual((await readHistory(me)).map((m) => m.text.length), [5000]);
+    assert.deepEqual((await readHistory(other.learner.id)).map((m) => m.text), ["theirs"], "trimming is per learner");
+  } finally {
+    await t.close();
+  }
 });
 
 test("starter prompts fit the page", () => {

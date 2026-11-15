@@ -1,7 +1,8 @@
 // A whole tutor turn, end to end, against a stand-in `claude` on PATH: the
 // real handler, the real worktree/commit/fast-forward code, a throwaway git
-// repo and temp data. No real CLI is spawned and nothing touches this repo's
-// content/, data/ or git.
+// repo, temp data and an in-process PGlite for the chat history. No real CLI
+// is spawned and nothing touches this repo's content/, data/ or git, or any
+// Postgres server.
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
@@ -11,12 +12,13 @@ import os from "node:os";
 import path from "node:path";
 import { after, before, beforeEach, test } from "node:test";
 import type { ChatMessage } from "../shared/wire.ts";
+import type { LearnerCtx } from "./auth.ts";
 import { reapOnSignal } from "../../scripts/claude.mjs";
 import { handleChat, recoverInterruptedTurn, tutorBusy } from "./chat.ts";
 import { gitRoot, linkOnTheWay, openWorkspace, processStarted, STALE_MS, sweepWorkspaces, workspaceBase, writable } from "./turn.ts";
 import { contentDir, loadContent, REPO_ROOT } from "./loader.ts";
-import { HttpError, sendJson } from "./sse.ts";
-import { dataDir, readHistory } from "./store.ts";
+import { appendHistory, clearHistory, dataDir, readHistory } from "./store.ts";
+import { asLearner, testLearner, type TestLearner } from "./test-db.ts";
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "fret-not-run-"));
 const repo = path.join(tmp, "repo");
@@ -29,6 +31,10 @@ const slowHit = () => fs.existsSync(`${slowFile}.hit`);
 const saved = { PATH: process.env.PATH, TMPDIR: process.env.TMPDIR, GIT_CONFIG_GLOBAL: process.env.GIT_CONFIG_GLOBAL, GIT_CONFIG_NOSYSTEM: process.env.GIT_CONFIG_NOSYSTEM };
 let server: http.Server;
 let base = "";
+/** The database, and the learner (an admin's) every request comes from. */
+let t: TestLearner;
+let caller: () => LearnerCtx = () => t.ctx;
+const hist = () => readHistory(t.ctx.learner.id);
 
 const CURRICULUM = `tracks:
   - { id: core, title: Core }
@@ -194,12 +200,8 @@ exec ${JSON.stringify(realGit)} "$@"
   process.env.PATH = `${bin}${path.delimiter}${saved.PATH}`;
   process.env.TMPDIR = path.join(tmp, "tmp");
 
-  server = http.createServer((req, res) => {
-    req.url = (req.url ?? "/").replace(/^\/api\/chat/, "") || "/";
-    Promise.resolve()
-      .then(() => handleChat(req, res))
-      .catch((e) => sendJson(res, e instanceof HttpError ? e.status : 500, { error: String((e as Error)?.message || e) }));
-  });
+  t = await testLearner({ admin: true });
+  server = http.createServer(asLearner("/api/chat", handleChat, () => caller()));
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 });
@@ -216,11 +218,14 @@ after(async () => {
     }
     for (const key of ["FRET_DATA_DIR", "FRET_CONTENT_DIR", "FRET_REPO_ROOT"]) delete process.env[key];
     fs.rmSync(tmp, { recursive: true, force: true });
+    await t?.close();
   }
 });
 
 // Every test starts from the same committed repo: two valid lessons.
-beforeEach(() => {
+beforeEach(async () => {
+  caller = () => t.ctx;
+  await clearHistory(t.ctx.learner.id);
   fs.rmSync(repo, { recursive: true, force: true });
   fs.rmSync(path.join(tmp, "data"), { recursive: true, force: true });
   fs.rmSync(`${planFile}.hung`, { force: true });
@@ -279,7 +284,7 @@ const refs = () => git("for-each-ref", "--format=%(refname)", "refs/tutor").trim
 const worktrees = () => git("worktree", "list", "--porcelain").split("\n").filter((l) => l.startsWith("worktree ")).length;
 /** Directories left in the tutor's own work area. */
 const leftovers = () => fs.readdirSync(workspaceBase(repo));
-const notes = () => readHistory().filter((m) => m.role === "note").map((m) => m.text);
+const notes = async () => (await hist()).filter((m) => m.role === "note").map((m) => m.text);
 const NEW = "lessons/core/0-03-more.md";
 const addLesson: Step = { write: { [NEW]: lesson("core-0-more", "alpha") }, reply: "I wrote it.\n\nChanged: added lesson core-0-more." };
 function nothingLeftBehind(): void {
@@ -320,7 +325,7 @@ test("a clean content/: the turn's change is committed and fast-forwarded in; th
   assert.ok(call.argv.some((a) => a === `Write(/${path.join(call.cwd, "content")}/**)`), call.argv.join(" "));
   assert.match(promptsSeen()[0], /file content\/lessons\/core\/0-01-alpha\.md/);
   assert.match(promptsSeen()[0], /\[USER\]\nanother lesson please/);
-  assert.deepEqual(readHistory().map((m) => m.role), ["user", "assistant", "commit"]);
+  assert.deepEqual((await hist()).map((m) => m.role), ["user", "assistant", "commit"]);
   assert.deepEqual(refs(), [], "an applied commit needs no extra name");
   nothingLeftBehind();
 });
@@ -355,7 +360,7 @@ test("uncommitted work in content/: the turn runs read-only in the repository, s
   // Asked again straight away: the same note is not repeated.
   const second = await chat("then add a lesson");
   assert.deepEqual(names(second.events), ["start", "message", "commit", "done"]);
-  assert.equal(notes().length, 1);
+  assert.equal((await notes()).length, 1);
   assert.equal(fingerprint(), was, "byte for byte, index and refs included");
   nothingLeftBehind();
 });
@@ -363,7 +368,7 @@ test("uncommitted work in content/: the turn runs read-only in the repository, s
 test("other states that make a turn read-only: detached HEAD, no commits, a merge in progress, a link, an ignored file", async () => {
   const readOnly = async (re: RegExp) => {
     const was = fingerprint();
-    fs.rmSync(path.join(tmp, "data"), { recursive: true, force: true });
+    await clearHistory(t.ctx.learner.id);
     plan({ reply: "Here." });
     const { events } = await chat("hello");
     assert.deepEqual(names(events), ["start", "note", "message", "commit", "done"], String(re));
@@ -417,7 +422,7 @@ test("when the agent never runs, nothing is committed and nothing is touched", a
   assert.match(String(of(events, "error").error), /Your curriculum was not touched and nothing was committed/);
   assert.equal(of(events, "done").ok, false);
   assert.equal(fingerprint(), was);
-  assert.deepEqual(readHistory().map((m) => m.role), ["user", "note"]);
+  assert.deepEqual((await hist()).map((m) => m.role), ["user", "note"]);
   nothingLeftBehind();
 });
 
@@ -470,7 +475,7 @@ test("problems left after the repair turn: nothing reaches the repository, nothi
   assert.match(told, /lesson id "core-0-beta" no longer exists/);
   assert.deepEqual(of(events, "commit"), { skipped: true });
   assert.equal(fingerprint(), was, "no file, index entry, ref or commit changed");
-  assert.deepEqual(readHistory().map((m) => m.role), ["user", "assistant", "assistant", "note"]);
+  assert.deepEqual((await hist()).map((m) => m.role), ["user", "assistant", "assistant", "note"]);
   nothingLeftBehind();
 });
 
@@ -480,7 +485,7 @@ test("a file that is not a curriculum file, a dot-file, or a file git ignores: t
   git("commit", "-q", "-m", "ignore");
   for (const stray of ["notes.txt", "lessons/core/picture.png", ".gitattributes", "lessons/.hidden/x.md", "lessons/core/secret.md", "README.md"]) {
     const was = fingerprint();
-    fs.rmSync(path.join(tmp, "data"), { recursive: true, force: true });
+    await clearHistory(t.ctx.learner.id);
     plan({ write: { [NEW]: lesson("core-0-more", "alpha"), [stray]: "stray\n" }, reply: "Changed: added a lesson." }, { reply: "I cannot delete it.\nChanged: added a lesson." });
     const { events } = await chat("add a lesson");
     assert.deepEqual(names(events), ["start", "message", "fixing", "message", "problems", "commit", "done"], stray);
@@ -530,7 +535,7 @@ test("a cancelled turn leaves nothing and frees the tutor; while it runs the rep
   assert.equal(await pending, "aborted");
   await until("the tutor to be free again", () => !tutorBusy());
   assert.equal(fingerprint(), was);
-  const history: ChatMessage[] = readHistory();
+  const history: ChatMessage[] = await hist();
   assert.deepEqual(history.map((m) => m.role), ["user", "note"]);
   assert.match(history[1].text, /did not finish \(cancelled\)\. Whatever it had written so far was in a separate copy and has been thrown away/);
   nothingLeftBehind();
@@ -542,7 +547,7 @@ test("a cancelled turn leaves nothing and frees the tutor; while it runs the rep
 
 /** A turn whose commit was kept rather than applied: the note, the ref, and
  *  that nothing of the owner's moved. Returns the ref. */
-function assertHeld(events: Event[], reason: RegExp): string {
+async function assertHeld(events: Event[], reason: RegExp): Promise<string> {
   assert.deepEqual(names(events), ["start", "message", "note", "commit", "done"]);
   assert.deepEqual(of(events, "commit"), { skipped: true });
   const note = String(of(events, "note").text);
@@ -554,7 +559,7 @@ function assertHeld(events: Event[], reason: RegExp): string {
   assert.equal(git("log", "-1", "--format=%s", kept[0]).trim(), "agent: added lesson core-0-more.");
   assert.deepEqual(git("show", "--name-status", "--format=", kept[0]).trim().split("\n"), [`A\tcontent/${NEW}`]);
   assert.equal(fs.existsSync(path.join(content, NEW)), false, "the tutor's file is not in the working tree");
-  assert.deepEqual(readHistory().map((m) => m.role), ["user", "assistant", "note"]);
+  assert.deepEqual((await hist()).map((m) => m.role), ["user", "assistant", "note"]);
   nothingLeftBehind();
   return kept[0];
 }
@@ -564,7 +569,7 @@ test("the owner saves a lesson while the tutor works: the tutor's commit is kept
   const head = git("rev-parse", "HEAD").trim();
   plan({ ...addLesson, owner: { [`content/${BETA}`]: edited, "content/lessons/core/draft.md": "a draft\n" } });
   const { events } = await chat("another lesson please");
-  const ref = assertHeld(events, /content\/ has changes that are not committed \(content\/lessons\/core\/0-02-beta\.md, content\/lessons\/core\/draft\.md\) — they appeared while the tutor was working/);
+  const ref = await assertHeld(events, /content\/ has changes that are not committed \(content\/lessons\/core\/0-02-beta\.md, content\/lessons\/core\/draft\.md\) — they appeared while the tutor was working/);
   assert.equal(git("rev-parse", "HEAD").trim(), head);
   assert.equal(read(BETA), edited);
   assert.equal(read("lessons/core/draft.md"), "a draft\n");
@@ -595,7 +600,7 @@ test("the owner creates the very file the tutor is adding: not applied, and the 
 
 test("the branch moved while the tutor worked (a commit, or a switch): kept under a ref, and a cherry-pick takes it", async () => {
   plan({ ...addLesson, owner: { "app.txt": "the owner's commit\n" }, ownerGit: [["commit", "-q", "-am", "owner commits meanwhile"]] });
-  let ref = assertHeld((await chat("another lesson please")).events, /main gained or lost commits while the tutor was working/);
+  let ref = await assertHeld((await chat("another lesson please")).events, /main gained or lost commits while the tutor was working/);
   assert.deepEqual(commits(), ["owner commits meanwhile", "init"]);
   assert.deepEqual(status(), []);
   git("cherry-pick", ref);
@@ -603,9 +608,9 @@ test("the branch moved while the tutor worked (a commit, or a switch): kept unde
   git("update-ref", "-d", ref);
   git("reset", "-q", "--hard", "HEAD~1");
 
-  fs.rmSync(path.join(tmp, "data"), { recursive: true, force: true });
+  await clearHistory(t.ctx.learner.id);
   plan({ ...addLesson, ownerGit: [["checkout", "-q", "-b", "side"]] });
-  ref = assertHeld((await chat("another lesson please")).events, /was on main when the tutor started and is on side now/);
+  ref = await assertHeld((await chat("another lesson please")).events, /was on main when the tutor started and is on side now/);
   assert.equal(git("symbolic-ref", "HEAD").trim(), "refs/heads/side");
   assert.deepEqual(commits(), ["owner commits meanwhile", "init"]);
 });
@@ -782,8 +787,8 @@ test("Stop in the first second — before the worktree even exists — stops the
   await until("the tutor to be free again", () => !tutorBusy());
   assert.deepEqual(callsSeen(), [], "the agent was never started");
   assert.equal(fingerprint(), was);
-  assert.deepEqual(readHistory().map((m) => m.role), ["user", "note"]);
-  assert.match(notes()[0], /did not finish \(cancelled\)/);
+  assert.deepEqual((await hist()).map((m) => m.role), ["user", "note"]);
+  assert.match((await notes())[0], /did not finish \(cancelled\)/);
   nothingLeftBehind();
 });
 
@@ -798,8 +803,8 @@ test("Stop while the server is committing: the commit is not applied and nothing
   assert.equal(await pending, "aborted");
   await until("the tutor to be free again", () => !tutorBusy());
   assert.equal(fingerprint(), was, "no file, no index entry, no ref");
-  assert.deepEqual(readHistory().map((m) => m.role), ["user", "assistant", "note"]);
-  assert.match(notes()[0], /did not finish \(cancelled\)[\s\S]*nothing was committed/);
+  assert.deepEqual((await hist()).map((m) => m.role), ["user", "assistant", "note"]);
+  assert.match((await notes())[0], /did not finish \(cancelled\)[\s\S]*nothing was committed/);
   nothingLeftBehind();
 });
 
@@ -815,7 +820,7 @@ test("Stop once the files are being written is too late, and the record says so:
   assert.deepEqual(commits(), ["agent: added lesson core-0-more.", "init"]);
   assert.deepEqual(status(), [], "applied whole: nothing half-written");
   assert.equal(read(NEW), lesson("core-0-more", "alpha"));
-  assert.deepEqual(readHistory().map((m) => m.role), ["user", "assistant", "commit"]);
+  assert.deepEqual((await hist()).map((m) => m.role), ["user", "assistant", "commit"]);
   assert.deepEqual(refs(), []);
   nothingLeftBehind();
 });
@@ -861,7 +866,7 @@ test("a kept commit the app never got to mention (it stopped mid-way) is said at
   assert.deepEqual(refs(), ["refs/tutor/123-abc"], "kept until the owner decides");
 
   // 2. The server died between writing the files and moving the branch.
-  fs.rmSync(path.join(tmp, "data"), { recursive: true, force: true });
+  await clearHistory(t.ctx.learner.id);
   git("read-tree", "-m", "-u", head, kept);
   assert.deepEqual(status(), [`A  content/${NEW}`]);
   plan({ reply: "Here." });
@@ -874,12 +879,12 @@ test("a kept commit the app never got to mention (it stopped mid-way) is said at
   assert.deepEqual(commits(), ["agent: added lesson core-0-more.", "init"]);
 
   // 3. A name left on a commit that did land is dropped, and recorded.
-  fs.rmSync(path.join(tmp, "data"), { recursive: true, force: true });
+  await clearHistory(t.ctx.learner.id);
   plan({ reply: "Here." });
   ({ events } = await chat("hello"));
   assert.deepEqual(names(events), ["start", "message", "commit", "done"]);
   assert.deepEqual(refs(), []);
-  assert.deepEqual(readHistory().map((m) => m.role), ["user", "commit", "assistant"]);
+  assert.deepEqual((await hist()).map((m) => m.role), ["user", "commit", "assistant"]);
   nothingLeftBehind();
 });
 
@@ -900,7 +905,7 @@ test("quitting the app mid-turn deletes the turn's worktree before the process c
   const events = parseSse(await pending).filter((e) => e.event !== "heartbeat");
   assert.deepEqual(names(events), ["start", "error", "done"]);
   assert.match(String(of(events, "error").error), /did not finish \(cancelled\)[\s\S]*Your curriculum was not touched/i);
-  assert.deepEqual(readHistory().map((m) => m.role), ["user", "note"], "one note");
+  assert.deepEqual((await hist()).map((m) => m.role), ["user", "note"], "one note");
   await until("the tutor to be free again", () => !tutorBusy());
   assert.equal(fingerprint(), was);
 });
@@ -912,12 +917,36 @@ test("the old single-envelope output still yields the reply", async () => {
   assert.equal(of(events, "message").text, "An octave is a doubling of frequency.");
 });
 
-test("GET history returns the newest messages only", async () => {
-  fs.mkdirSync(dataDir(), { recursive: true });
-  fs.writeFileSync(path.join(dataDir(), "chat.jsonl"), Array.from({ length: 260 }, (_, i) => JSON.stringify({ role: "user", text: `m${i}`, ts: "" })).join("\n") + "\n");
+test("GET history returns the newest messages only, and only the learner's own", async () => {
+  for (let i = 0; i < 260; i++) await appendHistory(t.ctx.learner.id, { role: "user", text: `m${i}`, ts: "" });
   const res = await fetch(`${base}/api/chat/history`);
   const { messages } = (await res.json()) as { messages: ChatMessage[] };
   assert.equal(messages.length, 200);
   assert.equal(messages[0].text, "m60");
   assert.equal(messages.at(-1)?.text, "m259");
+  // Another learner (of another account) has a chat of its own, empty.
+  const other = await t.other();
+  caller = () => other;
+  const theirs = (await (await fetch(`${base}/api/chat/history`)).json()) as { messages: ChatMessage[] };
+  assert.deepEqual(theirs.messages, []);
+  assert.equal((await fetch(`${base}/api/chat/history`, { method: "DELETE" })).status, 200);
+  assert.equal((await hist()).length, 260, "clearing theirs leaves this learner's alone");
+});
+
+test("a non-admin's turn is read-only, however clean content/ is, and says why", async () => {
+  const other = await t.other();
+  caller = () => other;
+  const was = fingerprint();
+  plan({ reply: "I can't write lessons, but here is the answer." });
+  const { events } = await chat("write me a new lesson please");
+  assert.deepEqual(names(events), ["start", "note", "message", "commit", "done"]);
+  assert.match(String(of(events, "note").text), /only an admin's tutor may change the lessons/);
+  assert.equal(of(events, "commit").skipped, true);
+  const [call] = callsSeen();
+  assert.equal(call.argv[call.argv.indexOf("--tools") + 1], "Read,Glob,Grep", "no Write or Edit tool");
+  assert.equal(fs.realpathSync(call.cwd), fs.realpathSync(repo), "in the repository, not a worktree");
+  assert.equal(fingerprint(), was);
+  assert.deepEqual((await readHistory(other.learner.id)).map((m) => m.role), ["user", "note", "assistant"]);
+  assert.deepEqual(await hist(), [], "the admin's learner's chat is untouched");
+  nothingLeftBehind();
 });

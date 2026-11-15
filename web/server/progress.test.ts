@@ -5,14 +5,16 @@ import type { AddressInfo } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { after, before, beforeEach, test } from "node:test";
-import type { Progress } from "../shared/progress.ts";
+import { asc, eq } from "drizzle-orm";
+import { learners, progressBackups } from "../../scripts/db/schema.ts";
+import { emptyProgress, type Progress } from "../shared/progress.ts";
 import { contentDir, REPO_ROOT } from "./loader.ts";
-import { dataDir, handleProgress, repairProgress } from "./progress.ts";
-import { HttpError, sendJson } from "./sse.ts";
+import { handleProgress, repairProgress } from "./progress.ts";
+import { asLearner, testLearner, type TestLearner } from "./test-db.ts";
 
-// The real handler behind a throwaway HTTP server, with data and content
-// redirected to a temp dir. Nothing here may touch the repo's data/ or
-// content/.
+// The real handler behind a throwaway HTTP server, with content redirected
+// to a temp dir and progress kept in an in-process PGlite. Nothing here may
+// touch the repo's content/ or data/, or any Postgres server.
 
 const CURRICULUM = `
 tracks:
@@ -41,10 +43,25 @@ Some prose.
 let tmp = "";
 let server: http.Server;
 let base = "";
-const saved = { data: process.env.FRET_DATA_DIR, content: process.env.FRET_CONTENT_DIR };
+const saved = { content: process.env.FRET_CONTENT_DIR };
+let t: TestLearner;
+const me = () => t.ctx.learner.id;
 
-const progressFile = () => path.join(tmp, "data", "profiles", "default", "progress.json");
-const profileFiles = () => (fs.existsSync(path.dirname(progressFile())) ? fs.readdirSync(path.dirname(progressFile())).sort() : []);
+/** The learner's progress as stored (what a hand edit or a bug would change). */
+async function stored(): Promise<unknown> {
+  const [row] = await t.db.select({ progress: learners.progress }).from(learners).where(eq(learners.id, me()));
+  return row.progress;
+}
+async function store(value: unknown): Promise<void> {
+  await t.db.update(learners).set({ progress: value as Record<string, unknown> }).where(eq(learners.id, me()));
+}
+async function backups(): Promise<{ id: string; reason: string; data: unknown }[]> {
+  return t.db.select({ id: progressBackups.id, reason: progressBackups.reason, data: progressBackups.data }).from(progressBackups).where(eq(progressBackups.learnerId, me())).orderBy(asc(progressBackups.createdAt));
+}
+async function startOver(): Promise<void> {
+  await store(emptyProgress(me(), new Date("2026-01-01T00:00:00Z")));
+  await t.db.delete(progressBackups).where(eq(progressBackups.learnerId, me()));
+}
 
 type Reply = { progress: Progress; recovered?: boolean; recoveredTo?: string; dropped?: number; lessonDropped?: boolean; error?: string };
 
@@ -59,25 +76,18 @@ async function call(method: string, route: string, body?: unknown): Promise<{ st
 
 before(async () => {
   tmp = fs.mkdtempSync(path.join(os.tmpdir(), "fret-progress-"));
-  process.env.FRET_DATA_DIR = path.join(tmp, "data");
   process.env.FRET_CONTENT_DIR = path.join(tmp, "content");
-  // Precondition, not an assertion: if the redirects did not take, stop the
+  // Precondition, not an assertion: if the redirect did not take, stop the
   // whole file before any test can write into the real repo.
-  for (const dir of [dataDir(), contentDir()]) {
+  for (const dir of [contentDir()]) {
     if (!dir.startsWith(tmp + path.sep) || dir.startsWith(REPO_ROOT + path.sep)) throw new Error(`test isolation failed: ${dir} is not under ${tmp}`);
   }
   fs.mkdirSync(path.join(tmp, "content", "lessons", "core"), { recursive: true });
   fs.writeFileSync(path.join(tmp, "content", "curriculum.yaml"), CURRICULUM);
   fs.writeFileSync(path.join(tmp, "content", "lessons", "core", "0-01-alpha.md"), LESSON);
 
-  // What connect + wrap() do in the app: strip the mount prefix, and turn a
-  // thrown HttpError into its status.
-  server = http.createServer((req, res) => {
-    req.url = (req.url ?? "/").replace(/^\/api\/progress/, "") || "/";
-    Promise.resolve()
-      .then(() => handleProgress(req, res))
-      .catch((e) => sendJson(res, e instanceof HttpError ? e.status : 500, { error: String((e as Error)?.message || e) }));
-  });
+  t = await testLearner();
+  server = http.createServer(asLearner("/api/progress", handleProgress, () => t.ctx));
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 });
@@ -87,26 +97,42 @@ after(async () => {
     server?.closeAllConnections();
     await Promise.race([new Promise<void>((resolve) => (server ? server.close(() => resolve()) : resolve())), new Promise<void>((resolve) => setTimeout(resolve, 2000).unref())]);
   } finally {
-    for (const [key, value] of [["FRET_DATA_DIR", saved.data], ["FRET_CONTENT_DIR", saved.content]] as const) {
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
-    }
+    if (saved.content === undefined) delete process.env.FRET_CONTENT_DIR;
+    else process.env.FRET_CONTENT_DIR = saved.content;
     if (tmp) fs.rmSync(tmp, { recursive: true, force: true });
+    await t?.close();
   }
 });
 
-beforeEach(() => {
-  fs.rmSync(path.join(tmp, "data"), { recursive: true, force: true });
-});
+beforeEach(startOver);
 
-test("GET with no file is an empty progress and writes nothing", async () => {
+test("GET for a new learner is an empty progress and writes nothing", async () => {
+  const before = await stored();
   const { status, json } = await call("GET", "");
   assert.equal(status, 200);
   assert.equal(json.progress.version, 1);
-  assert.equal(json.progress.profile, "default");
+  assert.equal(json.progress.profile, me(), "the profile is the learner's id");
   assert.deepEqual(json.progress.concepts, {});
   assert.equal(json.recovered, undefined);
-  assert.equal(fs.existsSync(progressFile()), false);
+  assert.deepEqual(await stored(), before);
+});
+
+test("each learner has a progress of their own", async () => {
+  await call("POST", "/answers", { results: [{ concept: "alpha", correct: true }] });
+  const other = await t.other();
+  const theirs = http.createServer(asLearner("/api/progress", handleProgress, () => other));
+  await new Promise<void>((resolve) => theirs.listen(0, "127.0.0.1", resolve));
+  try {
+    const url = `http://127.0.0.1:${(theirs.address() as AddressInfo).port}/api/progress`;
+    const got = (await (await fetch(url)).json()) as Reply;
+    assert.deepEqual(got.progress.concepts, {});
+    assert.equal(got.progress.profile, other.learner.id);
+    await fetch(`${url}/reset`, { method: "POST", body: "{}", headers: { "Content-Type": "application/json" } });
+    assert.equal((await call("GET", "")).json.progress.concepts.alpha.attempts, 1, "their reset leaves this learner alone");
+  } finally {
+    theirs.closeAllConnections();
+    await new Promise<void>((resolve) => theirs.close(() => resolve()));
+  }
 });
 
 test("answers are folded in, saved, and unknown concepts and lessons are dropped", async () => {
@@ -133,10 +159,10 @@ test("answers are folded in, saved, and unknown concepts and lessons are dropped
   assert.equal(again.json.dropped, 0, "`dropped` counts answers only");
   assert.equal(again.json.lessonDropped, true, "the unrecorded lesson completion is reported by itself");
 
-  const onDisk = JSON.parse(fs.readFileSync(progressFile(), "utf8")) as Progress;
+  const onDisk = (await stored()) as Progress;
   assert.deepEqual(onDisk, again.json.progress);
   assert.deepEqual((await call("GET", "")).json.progress, onDisk);
-  assert.deepEqual(profileFiles(), ["progress.json"], "no temp file left behind");
+  assert.deepEqual(await backups(), [], "nothing was set aside");
 });
 
 test("bad input is a 400 with a reason and changes nothing", async () => {
@@ -157,12 +183,13 @@ test("bad input is a 400 with a reason and changes nothing", async () => {
     ["/placement", { level: "1" }],
     ["/placement", { level: 9 }],
   ];
+  const before = await stored();
   for (const [route, body] of cases) {
     const { status, json } = await call("POST", route, body);
     assert.equal(status, 400, `${route} ${JSON.stringify(body)}`);
     assert.ok(json.error && json.error.length > 5, `${route} ${JSON.stringify(body)} has a message`);
   }
-  assert.equal(fs.existsSync(progressFile()), false);
+  assert.deepEqual(await stored(), before);
 });
 
 test("wrong methods and unknown routes are refused", async () => {
@@ -178,23 +205,22 @@ test("placement marks earlier levels mastered and saves", async () => {
   assert.equal(json.progress.placedLevel, 1);
   assert.deepEqual(Object.keys(json.progress.concepts).sort(), ["alpha", "beta"]);
   assert.equal(json.progress.concepts.alpha.box, 2);
-  assert.deepEqual(JSON.parse(fs.readFileSync(progressFile(), "utf8")), json.progress);
+  assert.deepEqual(await stored(), json.progress);
 });
 
-test("a corrupt file is moved aside, never overwritten, and the reply says so", async () => {
-  for (const junk of ["{ this is not json", JSON.stringify({ version: 1, concepts: [] }), JSON.stringify({ version: 2, concepts: {}, lessons: {}, placedLevel: 0 })]) {
-    fs.rmSync(path.join(tmp, "data"), { recursive: true, force: true });
-    fs.mkdirSync(path.dirname(progressFile()), { recursive: true });
-    fs.writeFileSync(progressFile(), junk);
+test("a corrupt progress is kept aside, never overwritten, and the reply says so", async () => {
+  for (const junk of ["{ this is not progress", { version: 1, concepts: [] }, { version: 2, concepts: {}, lessons: {}, placedLevel: 0 }]) {
+    await startOver();
+    await store(junk);
     const { status, json } = await call("POST", "/answers", { results: [{ concept: "alpha", correct: true }] });
     assert.equal(status, 200);
     assert.equal(json.recovered, true);
     assert.equal(json.progress.concepts.alpha.attempts, 1);
-    const files = profileFiles();
-    const aside = files.filter((f) => f.startsWith("progress.corrupt-"));
-    assert.equal(aside.length, 1, files.join(", "));
-    assert.equal(json.recoveredTo, path.join(path.dirname(progressFile()), aside[0]), "the reply says where the old file went");
-    assert.equal(fs.readFileSync(path.join(path.dirname(progressFile()), aside[0]), "utf8"), junk);
+    const aside = await backups();
+    assert.equal(aside.length, 1);
+    assert.equal(aside[0].reason, "corrupt");
+    assert.equal(json.recoveredTo, aside[0].id, "the reply says which backup holds the old progress");
+    assert.deepEqual(aside[0].data, junk);
     const next = await call("GET", "");
     assert.equal(next.json.recovered, undefined, "only the request that found the damage reports it");
     assert.equal(next.json.progress.concepts.alpha.attempts, 1);
@@ -204,11 +230,10 @@ test("a corrupt file is moved aside, never overwritten, and the reply says so", 
 test("one bad entry costs that entry, not the whole file", async () => {
   await call("POST", "/answers", { results: [true, true, true, true].map((correct) => ({ concept: "alpha", correct })), lesson: { id: "core-0-alpha", score: 1 } });
   await call("POST", "/answers", { results: [{ concept: "beta", correct: true }, { concept: "gamma", correct: true }] });
-  const good = JSON.parse(fs.readFileSync(progressFile(), "utf8")) as Progress;
+  const good = (await stored()) as Progress;
   // A hand edit: one number quoted (still a number), one entry wrecked.
   const edited = { ...good, concepts: { ...good.concepts, alpha: { ...good.concepts.alpha, attempts: "4" }, beta: { ...good.concepts.beta, box: "soon" } } };
-  const text = JSON.stringify(edited);
-  fs.writeFileSync(progressFile(), text);
+  await store(edited);
   const { json } = await call("POST", "/answers", { results: [{ concept: "gamma", correct: true }] });
   assert.equal(json.recovered, true);
   assert.equal(json.progress.concepts.alpha.attempts, 4, "the quoted number is read as a number");
@@ -216,19 +241,21 @@ test("one bad entry costs that entry, not the whole file", async () => {
   assert.equal(json.progress.concepts.beta, undefined, "the unreadable entry is dropped");
   assert.equal(json.progress.concepts.gamma.attempts, 2);
   assert.equal(json.progress.lessons["core-0-alpha"].runs, 1, "lessons survive");
-  assert.equal(fs.readFileSync(json.recoveredTo!, "utf8"), text, "the original is kept beside it, untouched");
+  const [aside] = await backups();
+  assert.equal(json.recoveredTo, aside.id);
+  assert.deepEqual(aside.data, edited, "the original is kept aside, untouched");
   assert.equal((await call("GET", "")).json.recovered, undefined, "reported once");
 });
 
-test("reset archives the old file and starts empty", async () => {
+test("reset keeps the old progress as a backup and starts empty", async () => {
   await call("POST", "/answers", { results: [{ concept: "alpha", correct: true }] });
-  const old = fs.readFileSync(progressFile(), "utf8");
+  const old = await stored();
   const { status, json } = await call("POST", "/reset", {});
   assert.equal(status, 200);
   assert.deepEqual(json.progress.concepts, {});
-  const archived = profileFiles().filter((f) => f.startsWith("progress.reset-"));
-  assert.equal(archived.length, 1);
-  assert.equal(fs.readFileSync(path.join(path.dirname(progressFile()), archived[0]), "utf8"), old);
+  const archived = await backups();
+  assert.deepEqual(archived.map((b) => b.reason), ["reset"]);
+  assert.deepEqual(archived[0].data, old);
   assert.deepEqual((await call("GET", "")).json.progress.concepts, {});
 });
 
@@ -322,16 +349,17 @@ test("repair brings every number inside the range the rules assume", () => {
 
 test("an out-of-range file is repaired on load, kept aside, and usable afterwards", async () => {
   await call("POST", "/answers", { results: [true, true, true, true].map((correct) => ({ concept: "alpha", correct })) });
-  const good = JSON.parse(fs.readFileSync(progressFile(), "utf8")) as Progress;
-  const text = JSON.stringify({ ...good, concepts: { alpha: { ...good.concepts.alpha, box: 40, attempts: -9, dueAt: "9999-01-01T00:00:00.000Z" } } });
-  fs.writeFileSync(progressFile(), text);
+  const good = (await stored()) as Progress;
+  const bad = { ...good, concepts: { alpha: { ...good.concepts.alpha, box: 40, attempts: -9, dueAt: "9999-01-01T00:00:00.000Z" } } };
+  await store(bad);
   const { status, json } = await call("POST", "/answers", { results: [{ concept: "alpha", correct: true }] });
   assert.equal(status, 200);
   assert.equal(json.recovered, true);
   const a = json.progress.concepts.alpha;
   assert.deepEqual([a.box, a.attempts], [7, 5]);
   assert.ok(Date.parse(a.dueAt!) < Date.now() + 125 * 86_400_000);
-  assert.equal(fs.readFileSync(json.recoveredTo!, "utf8"), text);
+  const [aside] = await backups();
+  assert.deepEqual([aside.id, aside.reason, aside.data], [json.recoveredTo, "corrupt", bad]);
 });
 
 // ---- the opened-level record ---------------------------------------------------
@@ -342,25 +370,26 @@ test("the highest open level is recorded with answers, placement and a later GET
   const files = { "0-02-a.md": drilled("core-0-a", 0, "alpha"), "0-03-b.md": drilled("core-0-b", 0, "beta") };
   try {
     for (const [name, text] of Object.entries(files)) fs.writeFileSync(path.join(dir, "lessons", "core", name), text);
+    const before = await stored();
     const fresh = await call("GET", "");
     assert.equal(fresh.json.progress.openedLevel, 0);
-    assert.equal(fs.existsSync(progressFile()), false, "GET still writes nothing for a new learner");
+    assert.deepEqual(await stored(), before, "GET still writes nothing for a new learner");
     const four = (concept: string) => [true, true, true, true].map((correct) => ({ concept, correct }));
     let r = await call("POST", "/answers", { results: four("alpha") });
     assert.equal(r.json.progress.openedLevel, 0, "1 of 2 drilled level-0 concepts: level 1 is still shut");
     r = await call("POST", "/answers", { results: four("beta") });
     assert.ok((r.json.progress.openedLevel ?? 0) >= 1, "level 1 opened and that is on record");
-    assert.equal((JSON.parse(fs.readFileSync(progressFile(), "utf8")) as Progress).openedLevel, r.json.progress.openedLevel);
+    assert.equal(((await stored()) as Progress).openedLevel, r.json.progress.openedLevel);
 
-    // A file from before the field: the next GET notes what is open.
+    // A progress from before the field: the next GET notes what is open.
     const { openedLevel: _o, ...old } = r.json.progress;
-    fs.writeFileSync(progressFile(), JSON.stringify(old));
+    await store(old);
     const got = await call("GET", "");
     assert.equal(got.json.recovered, undefined);
     assert.ok((got.json.progress.openedLevel ?? 0) >= 1);
-    assert.ok(((JSON.parse(fs.readFileSync(progressFile(), "utf8")) as Progress).openedLevel ?? 0) >= 1);
+    assert.ok((((await stored()) as Progress).openedLevel ?? 0) >= 1);
 
-    fs.rmSync(path.join(tmp, "data"), { recursive: true, force: true });
+    await startOver();
     const placed = await call("POST", "/placement", { level: 2 });
     assert.equal(placed.json.progress.openedLevel, 2);
   } finally {
