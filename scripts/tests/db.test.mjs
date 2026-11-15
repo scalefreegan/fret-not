@@ -15,6 +15,7 @@ import { freshDb } from "./testdb.mjs";
 import { DEFAULT_DATABASE_URL, databaseName, databaseUrl, isLinkedWorktree, redact } from "../db/config.mjs";
 import { applyMigrations, compareMigrations, describeMigrations, migrationState, migrationsOnDisk } from "../db/migrations.mjs";
 import { forLearner, forUser } from "../db/owned.ts";
+import { cliAddRefusal, createUser } from "../db/accounts.ts";
 import { authSessions, chatMessages, learners, progressBackups, userSettings, users } from "../db/schema.ts";
 
 const rowsOf = (pg) => async (text, params) => (await pg.query(text, params)).rows;
@@ -72,6 +73,14 @@ test("an out-of-order migration is applied by hash, and a database ahead is refu
 });
 
 /* -------------------------------- the schema ------------------------------ */
+
+test("the command line may not make the first account (that is the app's first run, which imports data/)", async (t) => {
+  const { db, close } = await freshDb();
+  t.after(close);
+  assert.match(await cliAddRefusal(db), /no accounts yet: create the first one in the app/);
+  await createUser(db, { username: "robin", passwordHash: "x", isAdmin: true });
+  assert.equal(await cliAddRefusal(db), null);
+});
 
 test("usernames are lowercase and unique; roles and backup reasons are checked", async (t) => {
   const { db, close } = await freshDb();

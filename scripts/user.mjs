@@ -8,9 +8,10 @@
 //
 // Accounts are made here, not in the app (docs/DATA.md §Auth). The one
 // exception is the very first account, which the app's "Create the first
-// account" screen makes while there are none. A user added here starts with
-// no learners; the app asks them to add one after their first login. Only
-// an admin's tutor may write lessons into content/. Ported from Lingo Dojo.
+// account" screen makes while there are none (`add` refuses until then). A
+// user added here starts with no learners; the app asks them to add one
+// after their first login. Only an admin's tutor may write lessons into
+// content/. Ported from Lingo Dojo.
 //
 // The password is prompted for without echo when stdin is a terminal, and
 // read from stdin otherwise (its first line), for scripting:
@@ -23,7 +24,7 @@ import pg from "pg";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { hashPassword, normalizeUsername, passwordProblem, usernameProblem } from "./auth.mjs";
 import { databaseUrl, redact } from "./db/config.mjs";
-import { createUser, disableUser, enableUser, listUsers, setAdmin, setPassword } from "./db/accounts.ts";
+import { cliAddRefusal, createUser, disableUser, enableUser, listUsers, setAdmin, setPassword } from "./db/accounts.ts";
 import * as schema from "./db/schema.ts";
 
 const USAGE = `usage: npm run user -- add <name> [--admin] | passwd <name> | list | disable <name> | enable <name> | admin <name> [--off]`;
@@ -107,6 +108,8 @@ async function main() {
     }
     const name = nameArg(args);
     if (command === "add") {
+      const refusal = await cliAddRefusal(db);
+      if (refusal) throw new Error(refusal);
       const isAdmin = args.includes("--admin");
       const passwordHash = await hashPassword(await newPassword());
       try {
