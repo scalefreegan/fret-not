@@ -97,5 +97,11 @@ export function getSettings(): Promise<SettingsReply> {
   return req<SettingsReply>("/api/settings");
 }
 export function setModel(model: string): Promise<SettingsReply> {
-  return req<SettingsReply>("/api/settings", json({ model } satisfies SettingsRequest, "PUT"));
+  return putSettings({ model });
+}
+/** /api/settings now also holds Listen mode's voice/model/on-off choice
+ *  (server/chat.ts handleSettings): one settings object, one PUT. Exported
+ *  so src/tts/ (used well beyond this drawer) does not need its own copy. */
+export function putSettings(patch: Partial<SettingsRequest>): Promise<SettingsReply> {
+  return req<SettingsReply>("/api/settings", json(patch, "PUT"));
 }

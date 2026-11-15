@@ -9,6 +9,8 @@ import { PlacementPage, ReviewPage } from "./pages/Review.tsx";
 import { SketchpadPage } from "./pages/Sketchpad.tsx";
 import { href, useRoute } from "./router.ts";
 import { useAppData } from "./app-data.ts";
+import { ListenToggle } from "./ListenToggle.tsx";
+import { ListenProvider } from "./listen-state.tsx";
 import { AppDataProvider } from "./state.tsx";
 import { TutorDrawer, type TutorContext } from "./tutor/index.tsx";
 import { Button, Card, cx, UnsavedBanner } from "./ui.tsx";
@@ -128,6 +130,7 @@ function Shell() {
             </nav>
             <SavingPill saving={saver.status === "saving"} />
           </div>
+          <ListenToggle />
         </header>
         <main className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain" id="main-scroll">
           {saver.status === "failed" && <UnsavedBanner count={saver.unsaved} lesson={saver.pending} error={saver.error} onRetry={() => void saver.retry()} />}
@@ -147,7 +150,9 @@ function Shell() {
 export default function App() {
   return (
     <AppDataProvider>
-      <Shell />
+      <ListenProvider>
+        <Shell />
+      </ListenProvider>
     </AppDataProvider>
   );
 }

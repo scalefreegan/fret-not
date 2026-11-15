@@ -7,7 +7,9 @@ import type {
 } from "../shared/wire.ts";
 import { REPO_ROOT, contentDir, loadContent } from "./loader.ts";
 import { HttpError, methodNotAllowed, openSse, readJsonBody, sendJson, subPath } from "./sse.ts";
-import { appendHistory, clearHistory, getModel, readHistory, setModel } from "./store.ts";
+import { appendHistory, clearHistory, getListenMode, getModel, getTtsModelId, getTtsVoiceId, readHistory, setListenMode, setModel, setTtsModelId, setTtsVoiceId } from "./store.ts";
+import { ELEVEN_MODELS } from "./tts-models.ts";
+import { isConfigured as ttsConfigured } from "./tts.ts";
 import { applyCommit, changedPaths, closeWorkspace, commitWorkspace, foundHeldNote, gitRoot, heldNote, heldRefs, openWorkspace, readOnlyNote, strayWrites, sweepWorkspaces, writable, type NotReady, type Workspace } from "./turn.ts";
 
 // The Tutor: a headless `claude -p` (scripts/claude.mjs), one turn per request.
@@ -564,15 +566,38 @@ export async function handleChat(req: IncomingMessage, res: ServerResponse): Pro
 
 export async function handleSettings(req: IncomingMessage, res: ServerResponse): Promise<void> {
   if (subPath(req)) return sendJson(res, 404, { error: "no such route" });
-  const reply = (): SettingsReply => ({ model: getModel(), models: AGENT_MODELS });
+  const reply = (): SettingsReply => ({
+    model: getModel(),
+    models: AGENT_MODELS,
+    listenMode: getListenMode(),
+    ttsVoiceId: getTtsVoiceId(),
+    ttsModelId: getTtsModelId(),
+    ttsModels: ELEVEN_MODELS,
+    ttsConfigured: ttsConfigured(),
+  });
   if (req.method === "GET") return sendJson(res, 200, reply());
   if (req.method === "PUT") {
     const body = await readJsonBody<Partial<SettingsRequest>>(req);
-    const model = body?.model;
-    if (typeof model !== "string" || !AGENT_MODELS.some((m) => m.id === model)) {
-      throw new HttpError(400, `model must be one of ${AGENT_MODELS.map((m) => m.id).join(", ")}`);
+    if (body.model !== undefined) {
+      if (typeof body.model !== "string" || !AGENT_MODELS.some((m) => m.id === body.model)) {
+        throw new HttpError(400, `model must be one of ${AGENT_MODELS.map((m) => m.id).join(", ")}`);
+      }
+      setModel(body.model);
     }
-    setModel(model);
+    if (body.listenMode !== undefined) {
+      if (typeof body.listenMode !== "boolean") throw new HttpError(400, "listenMode must be a boolean");
+      setListenMode(body.listenMode);
+    }
+    if (body.ttsVoiceId !== undefined) {
+      if (body.ttsVoiceId !== null && typeof body.ttsVoiceId !== "string") throw new HttpError(400, "ttsVoiceId must be a string or null");
+      setTtsVoiceId(body.ttsVoiceId);
+    }
+    if (body.ttsModelId !== undefined) {
+      if (typeof body.ttsModelId !== "string" || !ELEVEN_MODELS.some((m) => m.id === body.ttsModelId)) {
+        throw new HttpError(400, `ttsModelId must be one of ${ELEVEN_MODELS.map((m) => m.id).join(", ")}`);
+      }
+      setTtsModelId(body.ttsModelId);
+    }
     return sendJson(res, 200, reply());
   }
   methodNotAllowed(res, "GET, PUT");

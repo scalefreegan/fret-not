@@ -6,6 +6,7 @@ import { parsePitch } from "../../shared/music/notes.ts";
 import { parseRhythm, parseTime, totalBeats } from "../../shared/music/rhythm.ts";
 import { playSound, stopAll, type Playback } from "../audio/index.ts";
 import { ErrorBoundary } from "../ErrorBoundary.tsx";
+import { useListen } from "../listen-data.ts";
 import { Button, cx, PlayButton } from "../ui.tsx";
 import { ChordBox } from "../widgets/notation/ChordBox.tsx";
 import { Fretboard, type FretMark } from "../widgets/notation/Fretboard.tsx";
@@ -340,6 +341,15 @@ export function QuestionCard({ q, onAnswered, onNext, last }: { q: Question; onA
     stopAll();
     return cancelReveal;
   }, [q.id, cancelReveal]);
+  // Listen mode: read each question's prompt as it appears. The prompt is
+  // already plain text (the engine never puts markdown in it), so it skips
+  // straight to speak() rather than speakableText().
+  const listen = useListen();
+  useEffect(() => {
+    if (!listen.on) return;
+    listen.speak(q.prompt);
+    return () => listen.stop();
+  }, [q.id, q.prompt, listen.on, listen.voiceId]); // eslint-disable-line react-hooks/exhaustive-deps
   // Side effects (recording, sound) happen here, once — not inside a state
   // updater, which StrictMode runs twice.
   const answeredId = useRef<string | null>(null);

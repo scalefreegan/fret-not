@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import type { ChatCommit, ChatMessage, SettingsReply, TutorContext } from "../../shared/wire.ts";
+import { speakableText } from "../../shared/tts/speakable.ts";
+import { useListen } from "../listen-data.ts";
 import { Button } from "../ui.tsx";
 import { clearChatHistory, getChatHistory, getSettings, sendChat, setModel } from "./api.ts";
 import { startersFor } from "./starters.ts";
@@ -98,6 +100,7 @@ export default function ChatPanel({ context, onContentChanged }: { context: Tuto
   const [note, setNote] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [settings, setSettings] = useState<SettingsReply | null>(null);
+  const listen = useListen();
   const tail = useRef<HTMLDivElement>(null);
   const box = useRef<HTMLTextAreaElement>(null);
   const abort = useRef<AbortController | null>(null);
@@ -142,6 +145,12 @@ export default function ChatPanel({ context, onContentChanged }: { context: Tuto
         message: (d) => {
           setFixing(false);
           setMessages((m) => [...m, { role: "assistant", text: d.text, ts: d.ts }]);
+          // The CLI buffers the whole turn (no streaming), so there is one
+          // whole reply to speak at once, same as any other auto-read block.
+          if (listen.on) {
+            const { text } = speakableText(d.text);
+            if (text.trim()) listen.speak(text);
+          }
           const parts = [
             d.numTurns != null && `${d.numTurns} turn${d.numTurns === 1 ? "" : "s"}`,
             d.costUsd != null && `$${d.costUsd.toFixed(3)}`,

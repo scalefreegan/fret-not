@@ -4,6 +4,7 @@ import { handleChat, handleSettings, recoverInterruptedTurn } from "./chat.ts";
 import { handleContent } from "./content.ts";
 import { handleProgress } from "./progress.ts";
 import { HttpError, sendJson } from "./sse.ts";
+import { handleTts } from "./tts.ts";
 
 // The whole "backend": dev-server-only middleware on the Vite server.
 // Single-user, localhost — no auth by design. Copied from Lingo Dojo.
@@ -75,6 +76,9 @@ export function apiPlugins(): Plugin {
       // model setting.
       server.middlewares.use("/api/chat", wrap(handleChat));
       server.middlewares.use("/api/settings", wrap(handleSettings));
+      // Text-to-speech for Listen mode: ElevenLabs, proxied so the API key
+      // never reaches the browser, with its audio cached under data/.
+      server.middlewares.use("/api/tts", wrap(handleTts));
       // Anything else under /api is a typo, not the SPA shell: answer in the
       // envelope the client already parses instead of index.html.
       server.middlewares.use("/api", wrap((_req, res) => sendJson(res, 404, { error: "no such route" })));

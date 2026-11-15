@@ -3,6 +3,7 @@
 // the progress routes. The curriculum's wire shape is shared/content.ts.
 
 import type { Progress } from "./progress.ts";
+import type { SpokenWord } from "./tts/alignment.ts";
 
 /** GET /api/progress, POST /api/progress/placement and /reset. */
 export interface ProgressReply {
@@ -138,13 +139,56 @@ export interface AgentModel {
   note: string;
 }
 
+/** An ElevenLabs TTS synthesis model, offered in the voice picker next to the
+ *  tutor's own model choice. */
+export interface TtsModel {
+  /** What the API's `model_id` accepts, e.g. "eleven_v4". */
+  id: string;
+  label: string;
+  note: string;
+}
+
 /** GET/PUT /api/settings — `models` is the list the UI may pick from; PUT
- *  takes {model} and answers with the same shape. */
+ *  takes {model} and answers with the same shape. `ttsVoiceId`/`ttsModelId`
+ *  are null until a voice has been chosen (Listen mode has nothing to speak
+ *  with until then); `ttsModels` is always the fixed catalog, `ttsConfigured`
+ *  says whether ELEVENLABS_API_KEY is set at all. */
 export interface SettingsReply {
   model: string;
   models: AgentModel[];
+  listenMode: boolean;
+  ttsVoiceId: string | null;
+  ttsModelId: string;
+  ttsModels: TtsModel[];
+  ttsConfigured: boolean;
 }
 
 export interface SettingsRequest {
-  model: string;
+  model?: string;
+  listenMode?: boolean;
+  ttsVoiceId?: string | null;
+  ttsModelId?: string;
+}
+
+/** GET /api/tts/voices — the learner's ElevenLabs voice library, proxied so
+ *  the API key never reaches the browser. */
+export interface TtsVoice {
+  id: string;
+  name: string;
+  /** A short preview clip URL, when ElevenLabs offers one for this voice. */
+  previewUrl?: string;
+}
+export interface TtsVoicesReply {
+  voices: TtsVoice[];
+}
+
+/** POST /api/tts/speak — body {text}; voice and model come from the stored
+ *  settings, not the request, so there is one voice everywhere. `audioUrl`
+ *  is a GET route serving the (now cached) audio directly. */
+export interface TtsSpeakRequest {
+  text: string;
+}
+export interface TtsSpeakReply {
+  audioUrl: string;
+  words: SpokenWord[];
 }

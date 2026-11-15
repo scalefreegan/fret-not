@@ -143,7 +143,11 @@ review schedule with growing intervals, and a missed review shortens its interva
 - Listening to a real instrument (microphone, MIDI). The input layer leaves room.
 - Physical technique lessons (posture, fingering drills, picking, pedalling).
 - Tablet or phone layout, touch-first interaction.
-- A profile switcher, a kids mode.
+- A profile switcher, a kids mode (simplifying the content or pacing for
+  children). Listen mode — reading lesson prose, tutor replies and exercise
+  prompts aloud with a word-by-word highlight, for a learner who is not
+  reading fluently yet — is a different thing: an accessibility aid over the
+  same adult-beginner content, not a separate simplified curriculum.
 - A composition lesson track (the Sketchpad is in; the lessons are level 7).
 - Copyrighted songs. Alternate guitar tunings, left-handed fretboard, other clefs.
 - Multi-user, auth, deployment, a database.
