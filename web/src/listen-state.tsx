@@ -16,13 +16,15 @@ export function ListenProvider({ children }: { children: ReactNode }) {
   const [voicesError, setVoicesError] = useState<string | null>(null);
   const [speaking, setSpeaking] = useState(false);
   const current = useRef<NarrationHandle | null>(null);
+  const touched = useRef(false);
 
   useEffect(() => {
     let live = true;
     getSettings().then(
       (s) => {
         if (!live) return;
-        setOnState(s.listenMode);
+        // A click on the toggle before this load came back wins over it.
+        if (!touched.current) setOnState(s.listenMode);
         setVoiceIdState(s.ttsVoiceId);
         setModelIdState(s.ttsModelId);
         setTtsModels(s.ttsModels);
@@ -45,6 +47,7 @@ export function ListenProvider({ children }: { children: ReactNode }) {
 
   const setOn = useCallback(
     (next: boolean) => {
+      touched.current = true;
       setOnState(next);
       if (!next) stop();
       void putSettings({ listenMode: next }).catch(() => setOnState(!next));
