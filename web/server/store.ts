@@ -3,6 +3,7 @@ import path from "node:path";
 import { DEFAULT_MODEL, isAgentModel } from "../../scripts/claude.mjs";
 import type { ChatMessage } from "../shared/wire.ts";
 import { REPO_ROOT } from "./loader.ts";
+import { DEFAULT_ELEVEN_MODEL, isElevenModel } from "./tts-models.ts";
 
 // The tutor's runtime state: the chat transcript and the model setting.
 // Plain files under data/ (gitignored, created on demand), read on every
@@ -11,7 +12,7 @@ import { REPO_ROOT } from "./loader.ts";
 //
 //   data/chat.jsonl      one {role, text, ts} per line, appended per message;
 //                        trimmed to its newest messages when it grows large
-//   data/settings.json   {model}
+//   data/settings.json   {model, listenMode, ttsVoiceId, ttsModelId}
 
 /** FRET_DATA_DIR when set (resolved against the repo root, like the content
  *  override), else <repo>/data. Per call, so a test can point it at a temp
@@ -100,14 +101,64 @@ export function getModel(): string {
 
 export function setModel(model: string): string {
   if (!isAgentModel(model)) throw new Error(`unknown model: ${model}`);
-  fs.mkdirSync(dataDir(), { recursive: true });
-  let existing: Record<string, unknown> = {};
+  patchSettings({ model });
+  return model;
+}
+
+/** settings.json as an object, or {} if it does not exist or is unreadable
+ *  (a hand-edited file with a syntax error loses its extra keys rather than
+ *  crashing the app — the same spirit as getModel's fallback). */
+function readSettingsRaw(): Record<string, unknown> {
   try {
     const raw: unknown = JSON.parse(fs.readFileSync(settingsPath(), "utf8"));
-    if (raw && typeof raw === "object" && !Array.isArray(raw)) existing = raw as Record<string, unknown>;
+    if (raw && typeof raw === "object" && !Array.isArray(raw)) return raw as Record<string, unknown>;
   } catch {
     /* no file yet, or unreadable: start fresh */
   }
-  writeAtomic(settingsPath(), `${JSON.stringify({ ...existing, model }, null, 2)}\n`);
-  return model;
+  return {};
+}
+
+/** Merge `patch` into settings.json, keeping every key some other setting
+ *  (the tutor's model, these TTS fields, anything later) already put there. */
+function patchSettings(patch: Record<string, unknown>): void {
+  fs.mkdirSync(dataDir(), { recursive: true });
+  writeAtomic(settingsPath(), `${JSON.stringify({ ...readSettingsRaw(), ...patch }, null, 2)}\n`);
+}
+
+/** Whether Listen mode (TTS read-aloud) is turned on. Off until the learner
+ *  turns it on, even once a voice is chosen. */
+export function getListenMode(): boolean {
+  return readSettingsRaw().listenMode === true;
+}
+export function setListenMode(on: boolean): boolean {
+  patchSettings({ listenMode: on });
+  return on;
+}
+
+/** The chosen ElevenLabs voice id, or null until the learner has picked one
+ *  (Listen mode has nothing to speak with until then — the UI should say
+ *  so rather than guess a voice). Not validated against the live voice
+ *  catalog here: that would mean a network call on every settings read, and
+ *  an id ElevenLabs later removes should surface as a clear "pick again" in
+ *  the UI, not silently fall back to another voice. */
+export function getTtsVoiceId(): string | null {
+  const raw = readSettingsRaw().ttsVoiceId;
+  return typeof raw === "string" && raw ? raw : null;
+}
+export function setTtsVoiceId(voiceId: string | null): string | null {
+  patchSettings({ ttsVoiceId: voiceId });
+  return voiceId;
+}
+
+/** The ElevenLabs synthesis model TTS requests use. Falls back to the
+ *  default exactly like getModel: a stale or unknown id in the file can
+ *  never reach the API. */
+export function getTtsModelId(): string {
+  const raw = readSettingsRaw().ttsModelId;
+  return isElevenModel(raw) ? raw : DEFAULT_ELEVEN_MODEL;
+}
+export function setTtsModelId(modelId: string): string {
+  if (!isElevenModel(modelId)) throw new Error(`unknown TTS model: ${modelId}`);
+  patchSettings({ ttsModelId: modelId });
+  return modelId;
 }

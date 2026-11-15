@@ -3,10 +3,12 @@ import type { Content, Lesson } from "../../shared/content.ts";
 import type { Question } from "../../shared/exercise-types.ts";
 import { generateQuestions } from "../../shared/exercises.ts";
 import { isLessonDone, isMastered, LESSON_DONE_SCORE } from "../../shared/progress.ts";
+import { speakableText } from "../../shared/tts/speakable.ts";
 import { ExerciseRunner, type Answered } from "../exercises/Runner.tsx";
-import { Markdown } from "../markdown.tsx";
+import { Markdown, SpokenMarkdown } from "../markdown.tsx";
 import { go, href, scrollTop } from "../router.ts";
 import { useAnswerSaver, useAppData } from "../app-data.ts";
+import { useListen } from "../listen-data.ts";
 import { Button, Card, cx, SaveNotice, UpdatedNotice, useStable } from "../ui.tsx";
 import { RenderWidget } from "../widgets/registry.tsx";
 
@@ -64,6 +66,60 @@ export function LessonPage({ lesson, onAnswer }: { lesson: Lesson; onAnswer?: (a
     return got.length;
   }, [add]);
   useEffect(() => () => void savePartial(), [savePartial]);
+
+  // Listen mode: narrate the reading phase's prose blocks in order. A
+  // widget block pauses narration (the learner presses Continue) rather
+  // than being skipped or read past — CLAUDE.md's "show before telling"
+  // lessons put the widget right where there is something to try, and
+  // reading on over it would talk past what the learner is looking at.
+  const listen = useListen();
+  const [activeBlock, setActiveBlock] = useState<number | null>(null);
+  const [activeWord, setActiveWord] = useState<number | null>(null);
+  const [waitingAt, setWaitingAt] = useState<number | null>(null);
+  const goTo = useCallback(
+    (idx: number) => {
+      const blocks = lesson.blocks;
+      if (idx >= blocks.length) {
+        setActiveBlock(null);
+        setActiveWord(null);
+        setWaitingAt(null);
+        return;
+      }
+      const b = blocks[idx];
+      if (b.type === "widget") {
+        setWaitingAt(idx);
+        setActiveBlock(null);
+        setActiveWord(null);
+        return;
+      }
+      const { text } = speakableText(b.markdown);
+      if (!text.trim()) {
+        goTo(idx + 1); // a block with nothing but a widget fence, say
+        return;
+      }
+      setWaitingAt(null);
+      setActiveBlock(idx);
+      setActiveWord(null);
+      listen.speak(text, { onWord: setActiveWord, onEnd: () => goTo(idx + 1), onError: () => goTo(idx + 1) });
+    },
+    [lesson, listen],
+  );
+  useEffect(() => {
+    if (phase !== "read" || !listen.on || !listen.voiceId) return;
+    goTo(0);
+    return () => {
+      listen.stop();
+      setActiveBlock(null);
+      setActiveWord(null);
+      setWaitingAt(null);
+    };
+    // Re-run only on what should restart the passage from the top: Listen
+    // turned on/off, a different voice, leaving the reading phase, or a
+    // different lesson. Not on goTo's own identity (every word) or the
+    // sequence would restart mid-sentence each time activeWord changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase, listen.on, listen.voiceId, lesson.id]);
+
   if (!content) return null;
   const { prev, next } = neighbours(content, lesson);
   const level = content.levels.find((l) => l.id === lesson.level);
@@ -112,7 +168,20 @@ export function LessonPage({ lesson, onAnswer }: { lesson: Lesson; onAnswer?: (a
 
       {phase === "read" && (
         <>
-          {lesson.blocks.map((b, i) => (b.type === "prose" ? <Markdown key={i} source={b.markdown} /> : <LessonWidget key={i} type={b.widget} params={b.params} />))}
+          {lesson.blocks.map((b, i) => (
+            <div key={i}>
+              {b.type === "prose" ? (
+                listen.on ? <SpokenMarkdown source={b.markdown} activeWord={activeBlock === i ? activeWord : null} /> : <Markdown source={b.markdown} />
+              ) : (
+                <LessonWidget type={b.widget} params={b.params} />
+              )}
+              {waitingAt === i && (
+                <div className="my-4 flex justify-center">
+                  <Button variant="primary" onClick={() => goTo(i + 1)}>▶ Continue reading</Button>
+                </div>
+              )}
+            </div>
+          ))}
           <Card className="mt-10 flex flex-wrap items-center justify-between gap-4 px-5 py-4">
             {questions.length > 0 ? (
               <>
