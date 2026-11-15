@@ -99,6 +99,62 @@ test("first run: /me says so; the first account is an admin with one learner, lo
   assert.deepEqual(plain.body.learners.map((l) => l.name), ["lee"]);
 });
 
+test("first run: what data/ held before logins becomes the first learner's, read once and left in place", async () => {
+  const { db } = await freshRoutes();
+  const progress = {
+    version: 1, profile: "default", placedLevel: 0, openedLevel: 0, updatedAt: "2026-03-01T10:00:00.000Z",
+    concepts: { alpha: { recent: [true, true], attempts: 2, correct: 2, mastery: 0.4, box: 0, dueAt: null, lastSeenAt: "2026-03-01T10:00:00.000Z" } },
+    lessons: {},
+  };
+  const files = {
+    "settings.json": JSON.stringify({ model: "claude-opus-5-5", listenMode: true, ttsVoiceId: "voice-1", ttsModelId: "eleven_flash_v2_5", other: 1 }),
+    "chat.jsonl": [
+      JSON.stringify({ role: "user", text: "hello", ts: "2026-03-01T10:00:00.000Z" }),
+      JSON.stringify({ role: "weird", text: "skipped" }),
+      JSON.stringify({ role: "assistant", text: "hi there", ts: "2026-03-01T10:00:01.000Z" }),
+      '{"role":"note","text":"torn',
+    ].join("\n"),
+    "profiles/default/progress.json": JSON.stringify(progress),
+  };
+  try {
+    for (const [name, text] of Object.entries(files)) {
+      fs.mkdirSync(path.dirname(path.join(dataDir, name)), { recursive: true });
+      fs.writeFileSync(path.join(dataDir, name), text);
+    }
+    const c = anon();
+    const r = await c.call("POST", "/api/auth/first-run", { username: "robin", password: PASSWORD, learnerName: "Sam" });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    c.learnerId = r.body.learner.id;
+    const got = (await c.call("GET", "/api/progress")).body.progress;
+    assert.equal(got.profile, c.learnerId, "the progress is the learner's now");
+    assert.deepEqual(got.concepts, progress.concepts);
+    const history = (await c.call("GET", "/api/chat/history")).body.messages;
+    assert.deepEqual(history.map((m) => [m.role, m.text, m.ts]), [["user", "hello", "2026-03-01T10:00:00.000Z"], ["assistant", "hi there", "2026-03-01T10:00:01.000Z"]]);
+    const settings = (await c.call("GET", "/api/settings")).body;
+    assert.deepEqual([settings.model, settings.listenMode, settings.ttsVoiceId, settings.ttsModelId], ["claude-opus-5-5", true, "voice-1", "eleven_flash_v2_5"]);
+    for (const [name, text] of Object.entries(files)) assert.equal(fs.readFileSync(path.join(dataDir, name), "utf8"), text, `${name} is left as it was`);
+    // Only the first account gets it; anyone after starts empty.
+    const lee = await as(db, "lee", { learners: ["Lee"] });
+    lee.c.learnerId = (await lee.c.call("GET", "/api/auth/me")).body.learner.id;
+    assert.deepEqual((await lee.c.call("GET", "/api/progress")).body.progress.concepts, {});
+    assert.deepEqual((await lee.c.call("GET", "/api/chat/history")).body.messages, []);
+
+    // Unreadable files are left out, not a reason to refuse.
+    await freshRoutes();
+    fs.writeFileSync(path.join(dataDir, "settings.json"), "{ not json");
+    fs.writeFileSync(path.join(dataDir, "profiles/default/progress.json"), JSON.stringify({ version: 9 }));
+    const d = anon();
+    const again = await d.call("POST", "/api/auth/first-run", { username: "kim", password: PASSWORD });
+    assert.equal(again.status, 200, JSON.stringify(again.body));
+    d.learnerId = again.body.learner.id;
+    assert.deepEqual((await d.call("GET", "/api/progress")).body.progress.concepts, {});
+    assert.equal((await d.call("GET", "/api/settings")).body.model, "claude-sonnet-5-5");
+    assert.equal((await d.call("GET", "/api/chat/history")).body.messages.length, 2);
+  } finally {
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
 test("first run: a request that came through a proxy is refused with a 403, and bad input is a 400", async () => {
   const { db } = await freshRoutes();
   const body = { username: "mallory", password: PASSWORD };
