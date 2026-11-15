@@ -597,6 +597,7 @@ export async function handleSettings(req: IncomingMessage, res: ServerResponse, 
     ...(await getListenSettings(ref)),
     ttsModels: ELEVEN_MODELS,
     ttsConfigured: ttsConfigured(),
+    canWrite: ctx.user.isAdmin,
   });
   if (req.method === "GET") return sendJson(res, 200, await reply());
   if (req.method === "PUT") {

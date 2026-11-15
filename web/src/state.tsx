@@ -2,15 +2,17 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { AppDataContext, type AppData, type Saver, type SaveResult } from "./app-data.ts";
 import type { Content } from "../shared/content.ts";
 import { emptyProgress, type AnswerResult, type Progress } from "../shared/progress.ts";
+import { apiFetch, getPageLearner } from "./api/client.ts";
 import { getProgress, postAnswers, postPlacement, resetProgress } from "./api/progress.ts";
 
 // The two things every page needs: the curriculum (re-read from disk by the
-// server on every request) and the learner's progress. This file holds only
+// server on every request) and the progress of the learner this page shows
+// (the auth gate remounts all of this when the learner changes). This file holds only
 // the provider; the types and the hooks that read it are in app-data.ts.
 
 export function AppDataProvider({ children }: { children: ReactNode }) {
   const [content, setContent] = useState<Content | null>(null);
-  const [progress, setProgress] = useState<Progress>(() => emptyProgress("default", new Date()));
+  const [progress, setProgress] = useState<Progress>(() => emptyProgress(getPageLearner() ?? "", new Date()));
   const [error, setError] = useState<string | null>(null);
   const [recovered, setRecoveredFlag] = useState(false);
   const [recoveredTo, setRecoveredTo] = useState<string | null>(null);
@@ -22,7 +24,7 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
 
   const reloadContent = useCallback(async () => {
     try {
-      const res = await fetch("/api/content");
+      const res = await apiFetch("/api/content");
       if (!res.ok) throw new Error(`could not load the curriculum (${res.status})`);
       setContent((await res.json()) as Content);
       setError(null);

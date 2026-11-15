@@ -161,6 +161,9 @@ export interface SettingsReply {
   ttsModelId: string;
   ttsModels: TtsModel[];
   ttsConfigured: boolean;
+  /** An admin: may change the model, and the tutor may write lessons. For
+   *  anyone else the tutor only reads, and the model is the account default. */
+  canWrite: boolean;
 }
 
 export interface SettingsRequest {

@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import type { ChatCommit, ChatMessage, SettingsReply, TutorContext } from "../../shared/wire.ts";
 import { speakableText } from "../../shared/tts/speakable.ts";
 import { useListen } from "../listen-data.ts";
-import { Button } from "../ui.tsx";
+import { Button, inputClass } from "../ui.tsx";
 import { clearChatHistory, getChatHistory, getSettings, sendChat, setModel } from "./api.ts";
 import { startersFor } from "./starters.ts";
 
@@ -14,9 +14,6 @@ import { startersFor } from "./starters.ts";
  * reports after a turn that edited content/. A commit means the curriculum
  * changed, so the panel asks App to refetch it straight away. */
 
-const inputClass =
-  // 16px on a touch screen: iOS zooms the page when a smaller field takes focus.
-  "w-full rounded-xl border border-line-strong bg-panel px-3 py-1.5 text-sm text-fg pointer-coarse:text-base placeholder:text-fg-3 focus:border-accent focus:outline-none focus:ring-3 focus:ring-accent-soft disabled:opacity-60";
 
 /** A deliberately small markdown subset — replies are prose, not documents. */
 function inline(s: string, keyBase: string): ReactNode[] {
@@ -220,16 +217,24 @@ export default function ChatPanel({ context, onContentChanged }: { context: Tuto
   return (
     <div className="flex min-h-0 flex-1 flex-col" data-testid="tutor-chat">
       <div className="flex items-center gap-2 border-b border-line px-4 py-2 short:py-0.5">
-        <label className="flex min-w-0 flex-1 items-center gap-2 text-xs text-fg-3">
-          Model
-          <select aria-label="Model" className={`${inputClass} w-auto min-w-0 py-1 text-xs pointer-coarse:min-h-11`} value={settings?.model ?? ""} disabled={!settings || thinking} onChange={(e) => void pickModel(e.target.value)}>
-            {settings?.models.map((m) => (
-              <option key={m.id} value={m.id} title={m.note}>
-                {m.label}
-              </option>
-            ))}
-          </select>
-        </label>
+        {settings && !settings.canWrite ? (
+          // Not an admin: the tutor explains and answers but writes no
+          // lessons, and the model is not this account's to choose.
+          <p className="min-w-0 flex-1 text-xs text-fg-3" title="Only an admin's tutor can change the lessons">
+            {modelLabel} · answers only
+          </p>
+        ) : (
+          <label className="flex min-w-0 flex-1 items-center gap-2 text-xs text-fg-3">
+            Model
+            <select aria-label="Model" className={`${inputClass} w-auto min-w-0 py-1 text-xs pointer-coarse:min-h-11`} value={settings?.model ?? ""} disabled={!settings || thinking} onChange={(e) => void pickModel(e.target.value)}>
+              {settings?.models.map((m) => (
+                <option key={m.id} value={m.id} title={m.note}>
+                  {m.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
         <Button variant="ghost" size="sm" className="shrink-0" onClick={() => void clear()} disabled={thinking || messages.length === 0}>
           Clear history
         </Button>
@@ -239,7 +244,9 @@ export default function ChatPanel({ context, onContentChanged }: { context: Tuto
         {messages.length === 0 && !thinking && (
           <div className="space-y-3">
             <p className="text-sm text-fg-3">
-              Ask about anything on this page, or ask for more: another explanation, more practice, a new lesson. New material is written into the curriculum, and every change is a git commit you can undo.
+              {settings && !settings.canWrite
+                ? "Ask about anything on this page: another explanation, an example, a question about music. This tutor answers; only an admin's tutor writes new lessons."
+                : "Ask about anything on this page, or ask for more: another explanation, more practice, a new lesson. New material is written into the curriculum, and every change is a git commit you can undo."}
             </p>
             <ul className="flex flex-col items-start gap-1.5" data-testid="tutor-starters">
               {starters.map((s) => (

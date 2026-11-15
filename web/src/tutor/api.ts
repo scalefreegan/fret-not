@@ -1,29 +1,11 @@
 import type {
   ChatCommit, ChatDone, ChatError, ChatFixing, ChatHeartbeat, ChatHistoryReply, ChatNote, ChatProblems, ChatReply, ChatRequest, ChatStart, SettingsReply, SettingsRequest, TutorContext,
 } from "../../shared/wire.ts";
+import { apiFetch, json, request as req } from "../api/client.ts";
 
-// The tutor's client calls. Kept beside the drawer rather than in a shared
-// api module so the tutor stays one self-contained folder.
-
-async function req<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(url, init);
-  const text = await res.text();
-  let body: unknown = null;
-  try {
-    body = text ? JSON.parse(text) : null;
-  } catch {
-    /* non-JSON error page */
-  }
-  if (!res.ok) {
-    const err = body && typeof body === "object" && "error" in body ? (body as { error: unknown }).error : null;
-    throw new Error(typeof err === "string" ? err : text.slice(0, 200) || `${res.status} ${res.statusText}`);
-  }
-  return body as T;
-}
-
-function json(body: unknown, method = "POST"): RequestInit {
-  return { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
-}
+// The tutor's client calls, for the learner this page shows (its chat is
+// its own). Kept beside the drawer so the tutor stays one folder; the fetch
+// itself is the shared one in src/api/client.ts.
 
 /** Handlers for the SSE events POST /api/chat emits (shapes in wire.ts). */
 export interface ChatHandlers {
@@ -43,7 +25,7 @@ export interface ChatHandlers {
  *  pattern). Resolves when the server's terminal `done` arrives; a stream
  *  that ends without one is an error, not a quiet success. */
 async function ssePost(url: string, body: unknown, handlers: ChatHandlers, signal?: AbortSignal): Promise<void> {
-  const res = await fetch(url, { ...json(body), signal });
+  const res = await apiFetch(url, { ...json(body), signal });
   if (!res.ok || !res.body) {
     let detail = "";
     try {
