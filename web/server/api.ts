@@ -6,7 +6,7 @@ import { handleChat, handleSettings, recoverInterruptedTurn } from "./chat.ts";
 import { handleContent } from "./content.ts";
 import { checkDatabase, setDb, type Db } from "./db.ts";
 import { handleProgress } from "./progress.ts";
-import { HttpError, sendJson } from "./sse.ts";
+import { HttpError, INTERNAL_ERROR, sendJson } from "./sse.ts";
 import { handleTts, handleTtsAudio } from "./tts.ts";
 
 // The whole "backend": dev-server-only middleware on the Vite server, bound
@@ -43,10 +43,7 @@ type LearnerHandler = (req: IncomingMessage, res: ServerResponse, ctx: LearnerCt
  *  (the default), or an admin. */
 export type AuthLevel = "public" | "user" | "admin";
 
-/** What a 500 says to the client. The thrown error can be a database error
- *  whose message holds the failed query and its parameters; that goes to
- *  the server log, never into a reply. */
-export const INTERNAL_ERROR = "something went wrong on the server; its log has the details";
+export { INTERNAL_ERROR };
 
 /**
  * Every route goes through here: the same-origin check first, then the

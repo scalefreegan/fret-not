@@ -22,6 +22,12 @@ export function openSse(res: ServerResponse): SseSend {
   };
 }
 
+/** What a 500 (or a tutor turn that broke on something unexpected) says to
+ *  the client. The thrown error can be a database error whose message holds
+ *  the failed query and its parameters; that goes to the server log, never
+ *  into a reply, a stream or the chat history. */
+export const INTERNAL_ERROR = "something went wrong on the server; its log has the details";
+
 /** Thrown by readJsonBody; wrap() turns it into the status it names. */
 export class HttpError extends Error {
   status: number;

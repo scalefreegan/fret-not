@@ -11,6 +11,7 @@ import type { AddressInfo } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { after, before, beforeEach, test } from "node:test";
+import { sql } from "drizzle-orm";
 import type { ChatMessage } from "../shared/wire.ts";
 import type { LearnerCtx } from "./auth.ts";
 import { reapOnSignal } from "../../scripts/claude.mjs";
@@ -915,6 +916,52 @@ test("the old single-envelope output still yields the reply", async () => {
   const { events } = await chat("what is an octave?");
   assert.deepEqual(names(events), ["start", "message", "commit", "done"]);
   assert.equal(of(events, "message").text, "An octave is a doubling of frequency.");
+});
+
+/** Make every insert of a chat message with this role fail, with a message
+ *  that must never reach the learner; undone by the returned function. */
+async function failInserts(role: string): Promise<() => Promise<void>> {
+  await t.db.execute(sql.raw(`create or replace function fail_chat() returns trigger language plpgsql as $$ begin if new.role = '${role}' then raise exception 'SECRET DETAIL from the database'; end if; return new; end $$`));
+  await t.db.execute(sql.raw("create trigger fail_chat before insert on chat_messages for each row execute function fail_chat()"));
+  return async () => {
+    await t.db.execute(sql.raw("drop trigger fail_chat on chat_messages"));
+    await t.db.execute(sql.raw("drop function fail_chat()"));
+  };
+}
+
+test("the chat record failing after the commit landed: the turn says it was committed, and still sends the commit", async () => {
+  const undo = await failInserts("commit");
+  try {
+    plan(addLesson);
+    const { events } = await chat("add a lesson");
+    assert.deepEqual(names(events), ["start", "message", "error", "commit", "done"]);
+    const error = String(of(events, "error").error);
+    assert.match(error, /was committed \([0-9a-f]{7}: added lesson core-0-more\.\) and is in your curriculum, but the chat could not record it/);
+    assert.doesNotMatch(error, /SECRET|nothing was committed/);
+    assert.match(String(of(events, "commit").hash), /^[0-9a-f]{7}$/, "the page is told to reload the curriculum");
+    assert.equal(of(events, "done").ok, false);
+    assert.deepEqual(commits(), ["agent: added lesson core-0-more.", "init"], "the change is in");
+  } finally {
+    await undo();
+  }
+  nothingLeftBehind();
+});
+
+test("a turn that breaks on something unexpected shows the generic line, never the raw error", async () => {
+  const undo = await failInserts("assistant");
+  try {
+    plan(addLesson);
+    const { events } = await chat("add a lesson");
+    assert.deepEqual(names(events), ["start", "error", "done"]);
+    const error = String(of(events, "error").error);
+    assert.match(error, /something went wrong on the server; its log has the details/);
+    assert.doesNotMatch(error, /SECRET/);
+    assert.ok((await hist()).every((m) => !m.text.includes("SECRET")), "nor in the history");
+    assert.deepEqual(commits(), ["init"]);
+  } finally {
+    await undo();
+  }
+  nothingLeftBehind();
 });
 
 test("GET history returns the newest messages only, and only the learner's own", async () => {

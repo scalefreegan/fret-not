@@ -7,7 +7,7 @@ import type {
   SettingsReply, SettingsRequest, TutorContext,
 } from "../shared/wire.ts";
 import { REPO_ROOT, contentDir, loadContent } from "./loader.ts";
-import { HttpError, methodNotAllowed, openSse, readJsonBody, sendJson, subPath } from "./sse.ts";
+import { HttpError, INTERNAL_ERROR, methodNotAllowed, openSse, readJsonBody, sendJson, subPath } from "./sse.ts";
 import type { LearnerCtx } from "./auth.ts";
 import { appendHistory, clearHistory, getListenSettings, getModel, readHistory, setListenSettings, setModel, type ListenSettings } from "./store.ts";
 import { ELEVEN_MODELS } from "./tts-models.ts";
@@ -304,6 +304,18 @@ export function readOnlyBrief(why: NotReady): string {
 
 /* -------------------------------- the run -------------------------------- */
 
+/** A turn that stopped for a reason the learner may read: the agent run
+ *  failed, timed out or was stopped (startClaude's own sentences). Anything
+ *  else that breaks a turn (a database error, a bug) is logged and shown as
+ *  INTERNAL_ERROR, never as its raw message. */
+export class TurnStopped extends Error {}
+
+/** What the learner is told when a commit landed but recording it in the
+ *  chat failed: the change is in, so the page must still reload it. */
+export function unrecordedCommitNote(hash: string, summary: string): string {
+  return `The tutor's change was committed (${hash}: ${summary}) and is in your curriculum, but the chat could not record it (${INTERNAL_ERROR}).`;
+}
+
 // One tutor turn at a time: the learner has one chat, and two turns would
 // only race to fast-forward the same branch. The state lives on globalThis
 // because Vite re-evaluates this module when a server file is edited: a
@@ -396,6 +408,8 @@ async function handleChatPost(req: IncomingMessage, res: ServerResponse, actor: 
   const now = () => new Date().toISOString();
   let heartbeat: ReturnType<typeof setInterval> | null = null;
   let ws: Workspace | null = null;
+  /** The commit this turn put into the owner's branch, once it has. */
+  let applied: { hash: string; summary: string } | null = null;
   /** A non-admin's clean, read-only copy of HEAD (never committed from). */
   let lookWs: Workspace | null = null;
   // Everything from here on is inside the try, so nothing — not even opening
@@ -480,7 +494,7 @@ async function handleChatPost(req: IncomingMessage, res: ServerResponse, actor: 
 
       const turn = async (prompt: string): Promise<ChatMessage> => {
         // Stopped before the agent was even started: do not start it.
-        if (gone()) throw new Error("cancelled");
+        if (gone()) throw new TurnStopped("cancelled");
         tutor.phase = "agent";
         const { result } = startClaude(
           ws
@@ -489,7 +503,9 @@ async function handleChatPost(req: IncomingMessage, res: ServerResponse, actor: 
               ? { prompt, systemPrompt: system, model, cwd: os.tmpdir(), signal: ctrl.signal, tools: "none" }
               : { prompt, systemPrompt: system, model, cwd: lookDir, signal: ctrl.signal, tools: "read", repoRoot: lookDir },
         );
-        const run = await result;
+        const run = await result.catch((e: unknown) => {
+          throw new TurnStopped(String((e as Error)?.message || e));
+        });
         tutor.phase = "settling";
         const reply: ChatMessage = { role: "assistant", text: run.text.trim(), ts: now() };
         await appendHistory(learnerId, reply);
@@ -515,7 +531,7 @@ async function handleChatPost(req: IncomingMessage, res: ServerResponse, actor: 
         }
         // Stop pressed (or the page gone) after the agent's last call but
         // before the commit is still a stop: nothing is committed.
-        if (gone()) throw new Error("cancelled");
+        if (gone()) throw new TurnStopped("cancelled");
 
         if (broken.length) {
           const note: ChatMessage = { role: "note", text: remainingNote(broken), ts: now() };
@@ -530,9 +546,10 @@ async function handleChatPost(req: IncomingMessage, res: ServerResponse, actor: 
           } else if ("hash" in made) {
             // Asked again inside, immediately before the files are written.
             const landed = await applyCommit(ws, made.hash, { cancelled: gone });
-            if (!landed.applied && landed.cancelled) throw new Error("cancelled");
+            if (!landed.applied && landed.cancelled) throw new TurnStopped("cancelled");
             if (landed.applied) {
               commit = { hash: made.hash.slice(0, 7), summary: made.summary };
+              applied = commit;
               await appendHistory(learnerId, { role: "commit", text: `${commit.hash}: ${commit.summary}`, ts: now() });
             } else if (!landed.cancelled) {
               console.warn(`[fret-not] tutor: commit ${made.hash} kept as ${landed.ref}, not applied: ${landed.reason}`);
@@ -544,7 +561,19 @@ async function handleChatPost(req: IncomingMessage, res: ServerResponse, actor: 
       send("commit", commit);
       send("done", { ok: true } satisfies ChatDone);
     } catch (e) {
-      const msg = String((e as Error)?.message || e);
+      if (applied) {
+        // The change is in the owner's branch; only the record of it (or
+        // something after it) failed. Say so, and still send the commit so
+        // the page reloads the curriculum.
+        console.error("[fret-not] tutor: a turn failed after its commit landed:", e);
+        send("error", { error: unrecordedCommitNote(applied.hash, applied.summary) } satisfies ChatError);
+        send("commit", applied);
+        send("done", { ok: false } satisfies ChatDone);
+        return;
+      }
+      const known = e instanceof TurnStopped || e instanceof HttpError;
+      if (!known) console.error("[fret-not] tutor: a turn failed:", e);
+      const msg = known ? String((e as Error).message) : INTERNAL_ERROR;
       const reason = failureHint(msg) || msg;
       // The run died, timed out or was stopped (startClaude rejects only once
       // the process group is gone, so nothing is still writing). There is
