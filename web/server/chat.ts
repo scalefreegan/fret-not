@@ -1,3 +1,4 @@
+import os from "node:os";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { AGENT_MODELS, failureHint, onFatalSignal, startClaude, sweepPromptDirs } from "../../scripts/claude.mjs";
 import type { Content, ContentProblem } from "../shared/content.ts";
@@ -11,7 +12,7 @@ import type { LearnerCtx } from "./auth.ts";
 import { appendHistory, clearHistory, getListenSettings, getModel, readHistory, setListenSettings, setModel, type ListenSettings } from "./store.ts";
 import { ELEVEN_MODELS } from "./tts-models.ts";
 import { isConfigured as ttsConfigured } from "./tts.ts";
-import { applyCommit, changedPaths, closeWorkspace, commitWorkspace, foundHeldNote, gitRoot, heldNote, heldRefs, openWorkspace, readOnlyNote, strayWrites, sweepWorkspaces, writable, type NotReady, type Workspace } from "./turn.ts";
+import { applyCommit, changedPaths, closeWorkspace, commitWorkspace, foundHeldNote, gitRoot, heldNote, heldRefs, openReadOnlyWorkspace, openWorkspace, readOnlyNote, strayWrites, sweepWorkspaces, writable, type NotReady, type Workspace } from "./turn.ts";
 
 // The Tutor: a headless `claude -p` (scripts/claude.mjs), one turn per request.
 //
@@ -395,6 +396,8 @@ async function handleChatPost(req: IncomingMessage, res: ServerResponse, actor: 
   const now = () => new Date().toISOString();
   let heartbeat: ReturnType<typeof setInterval> | null = null;
   let ws: Workspace | null = null;
+  /** A non-admin's clean, read-only copy of HEAD (never committed from). */
+  let lookWs: Workspace | null = null;
   // Everything from here on is inside the try, so nothing — not even opening
   // the stream — can leave `running` set with no turn behind it.
   try {
@@ -417,6 +420,20 @@ async function handleChatPost(req: IncomingMessage, res: ServerResponse, actor: 
         readOnly = { ok: false, reason: "the app could not set up a separate working copy for it", fix: "Check `git worktree list` in a terminal and the app's log, then ask again." };
       }
     }
+    // A non-admin's turn never looks at the owner's working tree (it holds
+    // .env.local and data/): it reads a clean checkout of HEAD, or, when one
+    // cannot be made, gets no file tools at all.
+    let noFiles = false;
+    if (!actor.user.isAdmin) {
+      try {
+        lookWs = await openReadOnlyWorkspace(root, dir);
+        tutor.workspace = lookWs;
+      } catch (e) {
+        console.error(`[fret-not] tutor: no clean copy for a read-only turn, so it runs without file tools: ${String((e as Error)?.message || e)}`);
+        noFiles = true;
+      }
+    }
+    const lookDir = ws ? ws.dir : lookWs ? lookWs.dir : root;
 
     const send = openSse(res);
     const startedAt = Date.now();
@@ -437,8 +454,8 @@ async function handleChatPost(req: IncomingMessage, res: ServerResponse, actor: 
       const model = await getModel(actor.user.id);
       // What the turn starts from: the worktree's content/ (the last commit)
       // when it may write, the working tree's when it may only read.
-      const before = loadContent(ws ? ws.content : dir);
-      const system = systemPrompt(before, ws ? ws.dir : root) + (readOnly ? readOnlyBrief(readOnly) : "");
+      const before = loadContent(ws ? ws.content : lookWs ? lookWs.content : dir);
+      const system = systemPrompt(before, lookDir) + (readOnly ? readOnlyBrief(readOnly) : "");
       armShutdownCleanup();
       const userLine: ChatMessage = { role: "user", text: message, ts: now() };
       await appendHistory(learnerId, userLine);
@@ -468,7 +485,9 @@ async function handleChatPost(req: IncomingMessage, res: ServerResponse, actor: 
         const { result } = startClaude(
           ws
             ? { prompt, systemPrompt: system, model, cwd: ws.dir, signal: ctrl.signal, contentDir: ws.content, repoRoot: ws.dir }
-            : { prompt, systemPrompt: system, model, cwd: root, signal: ctrl.signal, tools: "read" },
+            : noFiles
+              ? { prompt, systemPrompt: system, model, cwd: os.tmpdir(), signal: ctrl.signal, tools: "none" }
+              : { prompt, systemPrompt: system, model, cwd: lookDir, signal: ctrl.signal, tools: "read", repoRoot: lookDir },
         );
         const run = await result;
         tutor.phase = "settling";
@@ -554,6 +573,7 @@ async function handleChatPost(req: IncomingMessage, res: ServerResponse, actor: 
     // Committed and applied, kept under a ref, or thrown away: in every case
     // the worktree has done its job.
     if (ws) closeWorkspace(ws);
+    if (lookWs) closeWorkspace(lookWs);
     tutor.workspace = null;
     tutor.running = false;
     tutor.learnerId = null;

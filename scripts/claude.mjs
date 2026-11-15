@@ -149,6 +149,21 @@ export function contentDenials(contentDir = contentRoot(), repoRoot = REPO_ROOT)
 }
 
 /**
+ * What no turn may read, whatever its profile: the env files (the ElevenLabs
+ * key, DATABASE_URL) and data/ (the pre-database progress and chat, the
+ * Listen cache), anywhere under the run's root. A non-admin's read-only turn
+ * runs in a clean worktree of HEAD that holds none of these (gitignored
+ * files are not checked out); these rules are the second lock on that door,
+ * and the only one for an admin's read-only turn in the repository itself.
+ * Read rules are applied by the CLI to Glob and Grep too; they are named
+ * for each anyway.
+ */
+export function secretDenials(root = REPO_ROOT) {
+  const base = path.resolve(root).replace(/^\/+/, "");
+  return ["Read", "Glob", "Grep"].flatMap((tool) => [`${tool}(//${base}/.env*)`, `${tool}(//${base}/**/.env*)`, `${tool}(//${base}/data/**)`]);
+}
+
+/**
  * The argv for one run — pure, so the test pins the sandbox without spawning.
  *
  *   --restricted           ignores the user's, this repo's and local settings
@@ -180,7 +195,7 @@ export function buildArgs({ systemPrompt, model = DEFAULT_MODEL, maxTurns = 25, 
     : tools === "read"
       ? ["--tools", READ_TOOLS.join(","), "--allowedTools", ...READ_TOOLS]
       : ["--tools", TOOLS.join(","), "--allowedTools", "Read", "Glob", "Grep", ...contentGrants(contentDir, repoRoot)];
-  const denyPaths = tools === "content" ? contentDenials(contentDir, repoRoot) : [];
+  const denyPaths = tools === "content" ? [...contentDenials(contentDir, repoRoot), ...secretDenials(repoRoot)] : tools === "read" ? secretDenials(repoRoot ?? REPO_ROOT) : [];
   // A profile that cannot write still names the write tools as denied.
   const denyTools = tools === "content" ? DENIED : [...DENIED, "Edit", "Write", "MultiEdit"];
   // `-p` with no prompt argument: the prompt is read from stdin (startClaude).

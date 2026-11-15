@@ -87,7 +87,7 @@ function plan(...steps: Step[]): void {
 }
 const promptsSeen = (): string[] => (JSON.parse(fs.readFileSync(planFile, "utf8")) as { prompts: string[] }).prompts;
 /** Where each run of the stand-in was started, and with what arguments. */
-const callsSeen = (): { cwd: string; argv: string[] }[] => (JSON.parse(fs.readFileSync(planFile, "utf8")) as { calls: { cwd: string; argv: string[] }[] }).calls;
+const callsSeen = (): { cwd: string; argv: string[]; files: string[] }[] => (JSON.parse(fs.readFileSync(planFile, "utf8")) as { calls: { cwd: string; argv: string[]; files: string[] }[] }).calls;
 
 const git = (...args: string[]) => execFileSync("git", args, { cwd: repo, encoding: "utf8" });
 const read = (rel: string) => fs.readFileSync(path.join(content, rel), "utf8");
@@ -158,7 +158,7 @@ process.stdin.on("end", () => {
   const step = plan.steps[plan.next] || { reply: "(no step planned)" };
   plan.next++;
   plan.prompts.push(Buffer.concat(chunks).toString("utf8"));
-  plan.calls.push({ cwd: process.cwd(), argv: process.argv.slice(2) });
+  plan.calls.push({ cwd: process.cwd(), argv: process.argv.slice(2), files: fs.readdirSync(process.cwd()) });
   fs.writeFileSync(planFile, JSON.stringify(plan));
   const dir = path.join(process.cwd(), "content");
   const realRepo = ${JSON.stringify(repo)};
@@ -933,9 +933,16 @@ test("GET history returns the newest messages only, and only the learner's own",
   assert.equal((await hist()).length, 260, "clearing theirs leaves this learner's alone");
 });
 
-test("a non-admin's turn is read-only, however clean content/ is, and says why", async () => {
+test("a non-admin's turn is read-only, however clean content/ is, says why, and reads a clean copy that holds no secrets", async () => {
   const other = await t.other();
   caller = () => other;
+  // What a non-admin's tutor must never read: ignored, so not in any commit.
+  fs.writeFileSync(path.join(repo, ".gitignore"), ".env.local\ndata/\n");
+  git("add", ".gitignore");
+  git("commit", "-q", "-m", "ignore secrets");
+  fs.writeFileSync(path.join(repo, ".env.local"), "ELEVENLABS_API_KEY=secret\n");
+  fs.mkdirSync(path.join(repo, "data"), { recursive: true });
+  fs.writeFileSync(path.join(repo, "data", "chat.jsonl"), "{}\n");
   const was = fingerprint();
   plan({ reply: "I can't write lessons, but here is the answer." });
   const { events } = await chat("write me a new lesson please");
@@ -944,7 +951,13 @@ test("a non-admin's turn is read-only, however clean content/ is, and says why",
   assert.equal(of(events, "commit").skipped, true);
   const [call] = callsSeen();
   assert.equal(call.argv[call.argv.indexOf("--tools") + 1], "Read,Glob,Grep", "no Write or Edit tool");
-  assert.equal(fs.realpathSync(call.cwd), fs.realpathSync(repo), "in the repository, not a worktree");
+  assert.notEqual(call.cwd, fs.realpathSync(repo), "not the repository itself (its worktree is gone by now)");
+  assert.ok(call.cwd.startsWith(workspaceBase(repo) + path.sep), `a worktree of its own: ${call.cwd}`);
+  assert.ok(call.files.includes("content") && call.files.includes(".gitignore"), call.files.join(", "));
+  assert.ok(!call.files.includes(".env.local") && !call.files.includes("data"), `nothing ignored was checked out: ${call.files.join(", ")}`);
+  const denied = call.argv.slice(call.argv.indexOf("--disallowedTools"));
+  const base = call.cwd.replace(/^\/+/, "");
+  for (const rule of [`Read(//${base}/.env*)`, `Read(//${base}/data/**)`, `Grep(//${base}/**/.env*)`]) assert.ok(denied.includes(rule), rule);
   assert.equal(fingerprint(), was);
   assert.deepEqual((await readHistory(other.learner.id)).map((m) => m.role), ["user", "note", "assistant"]);
   assert.deepEqual(await hist(), [], "the admin's learner's chat is untouched");

@@ -354,6 +354,27 @@ export async function openWorkspace(ready: Ready, now = Date.now()): Promise<Wor
   return ws;
 }
 
+/** A clean checkout of HEAD for a turn that may only read (a non-admin's):
+ *  the agent sees the committed repository and nothing git ignores (no
+ *  .env.local, no data/, no node_modules), so there is nothing secret within
+ *  its reach. It is never committed from; closeWorkspace removes it like any
+ *  other. Throws when there is nothing to check out (no repository, no
+ *  commit, content/ outside it) or the commit holds a symbolic link, which
+ *  could lead a Read outside the copy; the caller then runs the turn with no
+ *  file tools at all. */
+export async function openReadOnlyWorkspace(root: string = gitRoot(), dir: string = contentDir(), now = Date.now()): Promise<Workspace> {
+  const spec = contentSpec(root, dir);
+  if (!spec) throw new Error(`the content directory ${dir} is not inside the repository ${root}`);
+  const base = (await git(root, ["rev-parse", "-q", "--verify", "HEAD^{commit}"])).trim();
+  const ws = await openWorkspace({ ok: true, root, spec, base, branch: "" }, now);
+  const links = unsafePaths(ws.dir).filter((p) => p !== ".git");
+  if (links.length) {
+    closeWorkspace(ws);
+    throw new Error(`the last commit holds symbolic links or .git entries (${links.slice(0, 3).join(", ")})`);
+  }
+  return ws;
+}
+
 /* ------------------------- whose worktree is this? ------------------------ */
 
 /** The file in a worktree's root naming the server process that made it.
