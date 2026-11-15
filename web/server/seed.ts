@@ -23,6 +23,11 @@ import { isElevenModel } from "./tts-models.ts";
 // a reason to refuse the first run, and listed in `problems` for the first
 // run's reply to show once. A damaged progress is also kept whole in
 // progress_backups (`damagedProgress`).
+//
+// Postgres text and jsonb cannot hold a NUL (U+0000), and one in any value
+// would fail the whole first run, the only way in to an empty database. So
+// NULs are dropped from what is imported, and a backup that holds one (or
+// is not JSON at all) is kept as the file's bytes: {encoding: "base64", raw}.
 
 const ROLES = new Set<string>(["user", "assistant", "commit", "note"]);
 
@@ -42,6 +47,20 @@ function readFile(file: string): Read {
 
 /** Postgres text cannot hold a NUL; nothing in a chat needs one. */
 const noNul = (s: string) => s.replaceAll("\u0000", "");
+
+/** A JSON value with every NUL dropped from its strings and keys. */
+export function withoutNul(v: unknown): unknown {
+  if (typeof v === "string") return noNul(v);
+  if (Array.isArray(v)) return v.map(withoutNul);
+  if (v && typeof v === "object") return Object.fromEntries(Object.entries(v).map(([k, x]) => [noNul(k), withoutNul(x)]));
+  return v;
+}
+
+/** JSON.stringify writes a NUL as \u0000; a raw one cannot appear. */
+const holdsNul = (v: unknown) => JSON.stringify(v).includes("\\u0000");
+
+/** A backup of the file's text that any jsonb column accepts. */
+const rawBackup = (text: string) => ({ encoding: "base64", raw: Buffer.from(text, "utf8").toString("base64") });
 
 export function readFirstRunSeed(name: string, dir: string = dataDir(), now: Date = new Date()): FirstRunSeed {
   const problems: string[] = [];
@@ -104,15 +123,17 @@ export function readFirstRunSeed(name: string, dir: string = dataDir(), now: Dat
     } catch {
       parsed = false;
     }
-    const repaired = parsed ? repairProgress(stored, now) : null;
+    const nul = parsed && holdsNul(stored);
+    const repaired = parsed ? repairProgress(nul ? withoutNul(stored) : stored, now) : null;
     if (!repaired) {
-      damagedProgress = parsed ? stored : p.text;
+      damagedProgress = parsed && !nul ? stored : rawBackup(p.text);
       console.warn(`[fret-not] first run: ${progressFile} is not readable progress; it is kept in progress_backups and the learner starts fresh`);
       problems.push(`${shown(progressFile)} could not be read, so progress starts fresh; the file's contents are kept as a backup.`);
     } else {
       progress = repaired.progress;
-      if (repaired.changed) {
-        damagedProgress = stored;
+      if (repaired.changed || nul || holdsNul(progress)) {
+        progress = withoutNul(progress) as typeof progress;
+        damagedProgress = nul ? rawBackup(p.text) : stored;
         console.warn(`[fret-not] first run: ${progressFile} needed repairs; the original is kept in progress_backups`);
         problems.push(`${shown(progressFile)} was partly damaged: what could be read was kept, and the original is kept as a backup.`);
       }
@@ -126,7 +147,7 @@ export function readFirstRunSeed(name: string, dir: string = dataDir(), now: Dat
     progress,
     ...(damagedProgress !== undefined ? { damagedProgress } : {}),
     listenMode: settings.listenMode === true,
-    ttsVoiceId: typeof settings.ttsVoiceId === "string" && settings.ttsVoiceId ? settings.ttsVoiceId : null,
+    ttsVoiceId: typeof settings.ttsVoiceId === "string" && noNul(settings.ttsVoiceId) ? noNul(settings.ttsVoiceId) : null,
     ttsModelId: isElevenModel(settings.ttsModelId) ? settings.ttsModelId : null,
     model: isAgentModel(settings.model) ? settings.model : null,
     messages,

@@ -246,7 +246,8 @@ export async function handleFirstRun(req: IncomingMessage, res: ServerResponse):
   const { user } = made;
   const [learner] = await listLearners(rawDb(), user.id);
   const ctx = await startSession(req, res, { id: user.id, username: user.username, isAdmin: user.isAdmin }, learner ?? null);
-  sendJson(res, 200, { ...(await meReply(ctx)), imported: { problems: seed.problems, backupId: made.backupId } } satisfies FirstRunReply);
+  const problems = made.backupFailed ? [...seed.problems, "The backup of the damaged progress could not be saved in the database; the original file in data/ is unchanged."] : seed.problems;
+  sendJson(res, 200, { ...(await meReply(ctx)), imported: { problems, backupId: made.backupId } } satisfies FirstRunReply);
 }
 
 /** /api/auth/logout and /api/auth/learner, both behind a session. */

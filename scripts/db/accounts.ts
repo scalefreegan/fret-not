@@ -129,7 +129,7 @@ export interface FirstRunSeed {
  * admin and the other sees a user and gets null. All or nothing: a seed that
  * fails to write leaves no half-made admin behind.
  */
-export async function createFirstAdmin(db: Db, account: { username: string; passwordHash: string }, seed: FirstRunSeed): Promise<{ user: User; backupId: string | null } | null> {
+export async function createFirstAdmin(db: Db, account: { username: string; passwordHash: string }, seed: FirstRunSeed): Promise<{ user: User; backupId: string | null; backupFailed: boolean } | null> {
   return db.transaction(async (tx) => {
     await tx.execute(sql`lock table ${users} in share row exclusive mode`);
     if (await hasUsers(tx)) return null;
@@ -143,12 +143,22 @@ export async function createFirstAdmin(db: Db, account: { username: string; pass
     if (seed.messages.length) {
       await forLearner(tx, learner.id).insert(chatMessages, seed.messages.map((m) => ({ role: m.role, text: m.text, ...(validDate(m.ts) ? { ts: new Date(m.ts) } : {}) })));
     }
+    // The backup is a courtesy (the file stays in data/): in a savepoint of
+    // its own, so a backup Postgres refuses never fails the first run.
     let backupId: string | null = null;
+    let backupFailed = false;
     if (seed.damagedProgress !== undefined) {
-      const [backup] = await forLearner(tx, learner.id).insert(progressBackups, { reason: "corrupt", data: seed.damagedProgress ?? {} });
-      backupId = backup.id;
+      try {
+        backupId = await tx.transaction(async (sp) => {
+          const [backup] = await forLearner(sp, learner.id).insert(progressBackups, { reason: "corrupt", data: seed.damagedProgress ?? {} });
+          return backup.id;
+        });
+      } catch (e) {
+        backupFailed = true;
+        console.warn(`[fret-not] first run: the backup of the damaged progress could not be saved: ${(e as Error).message}`);
+      }
     }
-    return { user, backupId };
+    return { user, backupId, backupFailed };
   });
 }
 

@@ -173,6 +173,26 @@ test("first run: what data/ held before logins becomes the first learner's, read
     assert.deepEqual(Object.keys((await e.call("GET", "/api/progress")).body.progress.concepts), ["alpha"]);
     const [kept] = await db3.select().from(progressBackups);
     assert.deepEqual([kept.id, kept.data], [third.body.imported.backupId, partly]);
+
+    // NULs, which Postgres text and jsonb refuse, never fail the first run
+    // (the only way in to an empty database): a NUL-filled file is backed up
+    // as its bytes, and a NUL inside readable progress or chat is dropped.
+    for (const [i, text] of [
+      "\u0000".repeat(64),
+      JSON.stringify({ ...progress, concepts: { ...progress.concepts, ["al\u0000pha"]: progress.concepts.alpha } }),
+    ].entries()) {
+      const { db: dbN } = await freshRoutes();
+      fs.writeFileSync(path.join(dataDir, "profiles/default/progress.json"), text);
+      fs.writeFileSync(path.join(dataDir, "chat.jsonl"), JSON.stringify({ role: "user", text: "a\u0000b", ts: "2026-03-01T10:00:00.000Z" }));
+      const n = anon();
+      const made = await n.call("POST", "/api/auth/first-run", { username: `nul${i}`, password: PASSWORD });
+      assert.equal(made.status, 200, JSON.stringify(made.body));
+      n.learnerId = made.body.learner.id;
+      const [nulBackup] = await dbN.select().from(progressBackups);
+      assert.deepEqual([nulBackup.id, nulBackup.data.encoding, Buffer.from(nulBackup.data.raw, "base64").toString("utf8")], [made.body.imported.backupId, "base64", text]);
+      assert.deepEqual((await n.call("GET", "/api/chat/history")).body.messages.map((m) => m.text), ["ab"]);
+      if (i === 1) assert.deepEqual(Object.keys((await n.call("GET", "/api/progress")).body.progress.concepts).sort(), ["alpha"]);
+    }
   } finally {
     fs.rmSync(dataDir, { recursive: true, force: true });
   }
