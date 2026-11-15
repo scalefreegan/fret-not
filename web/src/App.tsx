@@ -11,6 +11,8 @@ import { SketchpadPage } from "./pages/Sketchpad.tsx";
 import { href, useRoute } from "./router.ts";
 import { useAppData } from "./app-data.ts";
 import { ListenToggle } from "./ListenToggle.tsx";
+import { ListenTransport } from "./ListenTransport.tsx";
+import { useListen } from "./listen-data.ts";
 import { ListenProvider } from "./listen-state.tsx";
 import { AppDataProvider } from "./state.tsx";
 import { TutorDrawer, type TutorContext } from "./tutor/index.tsx";
@@ -69,6 +71,7 @@ function LockedLesson({ title, level, onOpen }: { title: string; level: number; 
 function Shell({ account }: { account: AccountActions }) {
   const route = useRoute();
   const { content, progress, progressLoaded, error, recovered, recoveredTo, reloadContent, saver } = useAppData();
+  const { on: listenOn } = useListen();
   /** Locked lessons the learner chose to open anyway, for this visit. */
   const [peeked, setPeeked] = useState<string[]>([]);
   const [recent, setRecent] = useState<NonNullable<TutorContext["recent"]>>([]);
@@ -165,6 +168,7 @@ function Shell({ account }: { account: AccountActions }) {
           )}
           <ErrorBoundary key={`${route.name}/${route.arg ?? ""}`} label="page">{page}</ErrorBoundary>
         </main>
+        {listenOn && <ListenTransport />}
         <nav className="z-10 flex shrink-0 border-t border-line bg-panel pb-[env(safe-area-inset-bottom)] sm:hidden" aria-label="Sections">
           {tabs.map((t) => tabLink(t, true))}
         </nav>

@@ -6,6 +6,26 @@ import type { NarrateOptions, NarrationHandle } from "./audio/speech.ts";
 // reads it. The provider that fills it is in listen-state.tsx — split the
 // same way app-data.ts/state.tsx are, so each hot-reloads cleanly.
 
+/** What the transport bar shows: nothing narrating (idle), fetching the
+ *  audio (loading), playing, or paused. */
+export type TransportState = "idle" | "loading" | "playing" | "paused";
+
+/** A page that reads a sequence of blocks (a lesson) hands the transport
+ *  its own Start/Back/Skip/Stop while it is showing; without one, the
+ *  transport works on the last single passage spoken (a tutor reply, an
+ *  exercise prompt): Back restarts it, Skip stops it. */
+export interface ListenSequence {
+  /** Start, when nothing is narrating: from the top (or on past the widget
+   *  the reading is waiting at). */
+  start: () => void;
+  /** Back, given how far into the current passage playback is. */
+  back: (elapsedSeconds: number) => void;
+  skip: () => void;
+  /** Stop: clear the highlight and any widget wait; Start then begins from
+   *  the top. (The provider stops the audio itself.) */
+  stop: () => void;
+}
+
 export interface ListenState {
   /** Whether Listen mode (auto read-aloud) is turned on. Saved per
    *  learner (learners.listen_mode, docs/DATA.md). */
@@ -33,6 +53,21 @@ export interface ListenState {
   /** Stop whatever is currently narrating, if anything. */
   stop: () => void;
   speaking: boolean;
+  /** The transport (src/ListenTransport.tsx). */
+  transport: TransportState;
+  /** The passage narrating now, if any. */
+  current: NarrationHandle | null;
+  /** Register the page's block sequence; returns the unregister. */
+  registerSequence: (sequence: ListenSequence) => () => void;
+  /** Start (idle) or resume (paused). */
+  play: () => void;
+  pause: () => void;
+  /** Move within the current passage, in seconds. */
+  seek: (deltaSeconds: number) => void;
+  back: () => void;
+  skip: () => void;
+  /** Stop, and clear the page's place: Start then begins from the top. */
+  stopAll: () => void;
 }
 
 export const ListenContext = createContext<ListenState | null>(null);
