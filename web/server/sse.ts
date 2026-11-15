@@ -25,20 +25,23 @@ export function openSse(res: ServerResponse): SseSend {
 /** Thrown by readJsonBody; wrap() turns it into the status it names. */
 export class HttpError extends Error {
   status: number;
-  constructor(status: number, message: string) {
+  /** A code the client acts on (wire.ts ErrorCode), sent beside the message. */
+  code?: string;
+  constructor(status: number, message: string, code?: string) {
     super(message);
     this.status = status;
+    if (code) this.code = code;
   }
 }
 
 const MAX_JSON_BODY = 1 << 20; // 1 MB — a pack is a few KB; a chat history is the largest legitimate body
 
-export async function readJsonBody<T>(req: IncomingMessage): Promise<T> {
+export async function readJsonBody<T>(req: IncomingMessage, max = MAX_JSON_BODY): Promise<T> {
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const c of req) {
     size += (c as Buffer).length;
-    if (size > MAX_JSON_BODY) throw new HttpError(413, "request body too large");
+    if (size > max) throw new HttpError(413, "request body too large");
     chunks.push(c as Buffer);
   }
   try {

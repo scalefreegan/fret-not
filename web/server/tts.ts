@@ -171,21 +171,32 @@ async function voices(): Promise<TtsVoicesReply> {
   return { voices: list };
 }
 
-const AUDIO_RE = /^audio\/([0-9a-f]{64})\.mp3$/;
+const AUDIO_RE = /^([0-9a-f]{64})\.mp3$/;
 
+/** GET /api/tts/audio/<hash>.mp3: a cached clip. Mounted on its own route
+ *  (api.ts) because an audio element cannot send the learner header; the
+ *  clips are content-addressed and the same for every learner. */
+export async function handleTtsAudio(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const audioMatch = AUDIO_RE.exec(subPath(req));
+  if (!audioMatch) return sendJson(res, 404, { error: "no such route" });
+  if (req.method !== "GET") return methodNotAllowed(res, "GET");
+  const { audio } = cachePaths(audioMatch[1]);
+  if (!fs.existsSync(audio)) return sendJson(res, 404, { error: "no such cached audio" });
+  // Content-addressed by a hash of (text, voice, model): the same key can
+  // never mean different bytes, so this is safe to cache for a long time,
+  // unlike Lingo Dojo's fresh-every-time voice.ts response. Private: it
+  // needs a login.
+  res.writeHead(200, { "Content-Type": "audio/mpeg", "Cache-Control": "private, max-age=31536000, immutable" });
+  fs.createReadStream(audio).pipe(res);
+}
+
+/** /api/tts/voices and /api/tts/speak (and, when mounted alone as in the
+ *  tests, /api/tts/audio/…). */
 export async function handleTts(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const seg = subPath(req);
-  const audioMatch = AUDIO_RE.exec(seg);
-  if (audioMatch) {
-    if (req.method !== "GET") return methodNotAllowed(res, "GET");
-    const { audio } = cachePaths(audioMatch[1]);
-    if (!fs.existsSync(audio)) return sendJson(res, 404, { error: "no such cached audio" });
-    // Content-addressed by a hash of (text, voice, model): the same key can
-    // never mean different bytes, so this is safe to cache for a long time,
-    // unlike Lingo Dojo's fresh-every-time voice.ts response.
-    res.writeHead(200, { "Content-Type": "audio/mpeg", "Cache-Control": "public, max-age=31536000, immutable" });
-    fs.createReadStream(audio).pipe(res);
-    return;
+  if (seg.startsWith("audio/")) {
+    req.url = `/${seg.slice("audio/".length)}`;
+    return handleTtsAudio(req, res);
   }
   if (seg === "voices") {
     if (req.method !== "GET") return methodNotAllowed(res, "GET");

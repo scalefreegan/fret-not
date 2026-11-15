@@ -192,3 +192,70 @@ export interface TtsSpeakReply {
   audioUrl: string;
   words: SpokenWord[];
 }
+
+/* --------------------------------- accounts -------------------------------- */
+// Logins and learners (server/auth.ts, docs/DATA.md §Auth).
+
+/** Every error reply: a sentence for the learner, and sometimes a code the
+ *  client acts on. */
+export type ErrorCode = "stale_learner";
+export interface ErrorReply {
+  error: string;
+  code?: ErrorCode;
+}
+
+/** The header naming the learner a page shows. A learner-scoped route
+ *  answers 409 `stale_learner` when it is not the session's active one. */
+export type LearnerHeader = "X-Learner-Id";
+
+export interface AuthUser {
+  id: string;
+  username: string;
+  /** An admin's tutor may write lessons into content/. */
+  isAdmin: boolean;
+}
+
+export interface LearnerInfo {
+  id: string;
+  name: string;
+}
+
+/** GET /api/auth/me, and the reply of login, first run and a learner pick. */
+export interface MeReply {
+  /** No account exists yet: the app shows "Create the first account". */
+  firstRun: boolean;
+  /** On a first run: this request may create it (made on the Mac itself). */
+  firstRunHere?: boolean;
+  user: AuthUser | null;
+  /** The session's active learner, or null (the picker). */
+  learner: LearnerInfo | null;
+  /** The account's live learners, oldest first. */
+  learners: LearnerInfo[];
+}
+
+export interface LoginRequest {
+  username: string;
+  password: string;
+}
+
+/** POST /api/auth/first-run: the admin account and its first learner's name
+ *  (the username when left out). */
+export interface FirstRunRequest extends LoginRequest {
+  learnerName?: string;
+}
+
+/** PUT /api/auth/learner: null goes back to the picker. */
+export interface PickLearnerRequest {
+  learnerId: string | null;
+}
+
+/** POST /api/learners, PATCH /api/learners/:id */
+export interface LearnerRequest {
+  name: string;
+}
+export interface LearnerReply {
+  learner: LearnerInfo;
+}
+export interface LearnersReply {
+  learners: LearnerInfo[];
+}
