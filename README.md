@@ -7,7 +7,7 @@
   <img src="https://img.shields.io/badge/TypeScript-3178C6?style=flat-square&logo=typescript&logoColor=white" alt="TypeScript">
   <img src="https://img.shields.io/badge/React-20232A?style=flat-square&logo=react&logoColor=61DAFB" alt="React">
   <img src="https://img.shields.io/badge/Vite-646CFF?style=flat-square&logo=vite&logoColor=white" alt="Vite">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="MIT License"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-blue?style=flat-square" alt="AGPL-3.0 license"></a>
 </p>
 
 <p align="center">
@@ -102,4 +102,8 @@ Music glyphs are set in [Bravura](https://github.com/steinbergmedia/bravura) (SI
 
 ## License
 
-The code and the lessons under `content/` are released under the MIT license; see [LICENSE](LICENSE). The bundled font and instrument samples keep their own licences, listed under Credits.
+[GNU Affero General Public License v3.0](LICENSE) (AGPL-3.0-only). You may use, change and share Fret Not, but if you distribute it or run a changed version as a network service, you must offer its users the complete source under the same license.
+
+This covers the code and the lessons under `content/`. The bundled font and instrument samples keep their own licences, listed under Credits.
+
+Versions published before 2026-11-16 were released under the MIT license.

@@ -1,6 +1,7 @@
 {
   "name": "fret-not",
   "version": "0.1.0",
+  "license": "AGPL-3.0-only",
   "private": true,
   "type": "module",
   "description": "Fret Not — a visual app for learning how music works, on piano and guitar",
