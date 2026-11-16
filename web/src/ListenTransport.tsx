@@ -85,6 +85,14 @@ export function ListenTransport() {
       {seekButton(5)}
       {icon("Skip to the next passage", listen.skip, ICONS.skip)}
       {icon("Stop", listen.stopAll, ICONS.stop, { className: "ml-1" })}
+      {listen.error && (
+        <p role="alert" className="ml-2 flex min-w-0 items-center gap-1 text-sm text-bad">
+          <span className="truncate" title={listen.error}>{listen.error}</span>
+          <button type="button" className="shrink-0 px-1 text-fg-3 hover:text-fg pointer-coarse:min-h-10" aria-label="Dismiss" onClick={listen.clearError}>
+            ✕
+          </button>
+        </p>
+      )}
     </div>
   );
 }

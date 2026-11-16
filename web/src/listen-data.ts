@@ -15,8 +15,8 @@ export type TransportState = "idle" | "loading" | "playing" | "paused";
  *  transport works on the last single passage spoken (a tutor reply, an
  *  exercise prompt): Back restarts it, Skip stops it. */
 export interface ListenSequence {
-  /** Start, when nothing is narrating: from the top (or on past the widget
-   *  the reading is waiting at). */
+  /** Start, when nothing is narrating: the passage it was on (stopped by a
+   *  widget's sound, say), on past the widget it waits at, or the top. */
   start: () => void;
   /** Back, given how far into the current passage playback is. */
   back: (elapsedSeconds: number) => void;
@@ -68,6 +68,11 @@ export interface ListenState {
   skip: () => void;
   /** Stop, and clear the page's place: Start then begins from the top. */
   stopAll: () => void;
+  /** The last thing that went wrong (a passage that could not be read, a
+   *  Listen setting that could not be saved), for the bar and the picker;
+   *  cleared by the next passage or setting. */
+  error: string | null;
+  clearError: () => void;
 }
 
 export const ListenContext = createContext<ListenState | null>(null);

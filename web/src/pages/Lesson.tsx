@@ -122,7 +122,7 @@ export function LessonPage({ lesson, onAnswer }: { lesson: Lesson; onAnswer?: (a
   useEffect(() => {
     if (phase !== "read") return;
     return registerSequence({
-      start: () => goToRef.current(place.current !== null && kinds[place.current] === "widget" ? place.current + 1 : 0),
+      start: () => goToRef.current(place.current === null ? 0 : kinds[place.current] === "widget" ? place.current + 1 : place.current),
       back: (elapsed) => goToRef.current(backTarget(kinds, place.current, elapsed)),
       skip: () => goToRef.current(skipTarget(kinds, place.current)),
       stop: clear,
