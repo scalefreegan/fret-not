@@ -148,6 +148,17 @@ function Shell({ account }: { account: AccountActions }) {
               {account.learner.name}'s saved progress was damaged. {Object.keys(progress.concepts).length || Object.keys(progress.lessons).length ? "What could be read was kept and the rest starts fresh" : "Nothing in it could be read, so progress starts fresh"}; the original is kept in the database as backup {recoveredTo ? <code className="font-mono text-sm break-all">{recoveredTo}</code> : "in progress_backups"} (docs/DATA.md says how to look at it).
             </p>
           )}
+          {account.lostAnswers && (
+            <div role="alert" className="mx-4 mt-4 flex flex-wrap items-center gap-x-3 rounded-lg border border-bad bg-bad-soft px-4 py-2 text-fg sm:mx-5" data-testid="lost-answers">
+              <p className="min-w-0 flex-1">
+                {account.lostAnswers.answers === 1 ? "1 answer was" : account.lostAnswers.answers > 1 ? `${account.lostAnswers.answers} answers were` : "A finished lesson was"} not saved
+                {account.lostAnswers.answers > 0 && account.lostAnswers.lesson ? " (nor the lesson they finished)" : ""}: the learner changed or the login ended (perhaps in another tab) before the server had them.
+              </p>
+              <Button size="sm" variant="ghost" onClick={account.onDismissLostAnswers}>
+                Dismiss
+              </Button>
+            </div>
+          )}
           {account.imported && (
             <div role="status" className="mx-4 mt-4 rounded-lg border border-warn bg-warn-soft px-4 py-2 text-fg sm:mx-5" data-testid="import-report">
               <p className="font-semibold">Some of what this copy of Fret Not had saved before logins could not be brought in:</p>

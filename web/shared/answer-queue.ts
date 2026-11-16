@@ -104,9 +104,12 @@ export class AnswerQueue {
     return run;
   }
 
-  /** The learner changed (or the app went away): send nothing more. */
-  close(): void {
+  /** The learner changed (or the app went away): send nothing more.
+   *  Returns what was still waiting and so will never be saved (answers, and
+   *  whether a lesson's completion was among it), for the learner to be told. */
+  close(): { answers: number; lesson: boolean } {
     this.#closed = true;
+    return { answers: this.#waiting.length, lesson: this.#lesson !== null };
   }
 
   /** Undo close(): React's development mode unmounts and remounts every

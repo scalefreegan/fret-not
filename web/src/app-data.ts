@@ -95,3 +95,9 @@ export function useAnswerSaver(): {
   const save = mine !== null && mine !== "saving" && !mine.ok && !saver.pending && saver.status === "idle" ? SAVED : mine;
   return { save, unsaved: saver.unsaved, add, retry };
 }
+
+/** Fired on the window when a learner's answer queue closes (a switch, a
+ *  logout, an expired session, another tab's change) with answers still
+ *  unsaved; AuthGate keeps it and the app says so until dismissed. */
+export const ANSWERS_LOST_EVENT = "fret-not:answers-lost";
+export type LostAnswers = { answers: number; lesson: boolean };

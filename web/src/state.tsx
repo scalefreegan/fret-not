@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import { AppDataContext, type AppData, type Saver, type SaveResult } from "./app-data.ts";
+import { ANSWERS_LOST_EVENT, AppDataContext, type AppData, type LostAnswers, type Saver, type SaveResult } from "./app-data.ts";
 import type { Content } from "../shared/content.ts";
 import { AnswerQueue, type QueueState } from "../shared/answer-queue.ts";
 import { emptyProgress, type AnswerResult, type Progress } from "../shared/progress.ts";
@@ -71,7 +71,12 @@ export function AppDataProvider({ learnerId, children }: { learnerId: string; ch
   const [queue] = useState(() => new AnswerQueue((results, lesson) => record(results, lesson), setQueueState));
   useEffect(() => {
     queue.open();
-    return () => queue.close();
+    return () => {
+      // Whatever was still waiting is lost with the learner (a switch here
+      // or in another tab, a logout, an expired session): say so after.
+      const lost = queue.close();
+      if (lost.answers || lost.lesson) globalThis.dispatchEvent?.(new CustomEvent<LostAnswers>(ANSWERS_LOST_EVENT, { detail: lost }));
+    };
   }, [queue]);
   const { unsaved, pending, status: saveStatus, error: saveError } = queueState;
 

@@ -54,7 +54,7 @@ test("once closed (the learner changed), a running loop sends nothing more, and 
   const q = new AnswerQueue(g.send, (s) => states.push(s.unsaved));
   const first = q.add([a("x")]);
   void q.add([a("y")]); // waits for the round after the one in flight
-  q.close();
+  assert.deepEqual(q.close(), { answers: 2, lesson: false }, "close says what it leaves unsaved (the batch in flight is not saved yet either)");
   await g.release();
   await first;
   assert.deepEqual(g.sent, [["x"]], "the queued batch did not go out under the next learner");

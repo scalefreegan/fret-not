@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { FirstRunReply, MeReply } from "../../shared/wire.ts";
 import App from "../App.tsx";
+import { ANSWERS_LOST_EVENT, type LostAnswers } from "../app-data.ts";
 import { getMe, logout, pickLearner } from "../api/auth.ts";
 import { ApiError } from "../api/client.ts";
 import { STALE_LEARNER_EVENT, UNAUTHORIZED_EVENT } from "../api/client.ts";
@@ -31,6 +32,16 @@ export function AuthGate() {
   const [switchError, setSwitchError] = useState<string | null>(null);
   /** What the first run could not import, until dismissed. */
   const [imported, setImported] = useState<FirstRunReply["imported"] | null>(null);
+  /** Answers lost when the app last let go of a learner, until dismissed. */
+  const [lostAnswers, setLostAnswers] = useState<LostAnswers | null>(null);
+  useEffect(() => {
+    const on = (e: Event) => {
+      const d = (e as CustomEvent<LostAnswers>).detail;
+      setLostAnswers((was) => ({ answers: (was?.answers ?? 0) + d.answers, lesson: (was?.lesson ?? false) || d.lesson }));
+    };
+    window.addEventListener(ANSWERS_LOST_EVENT, on);
+    return () => window.removeEventListener(ANSWERS_LOST_EVENT, on);
+  }, []);
 
   /** What the page shows. The app it renders names its own learner on
    *  every call (src/api/client.ts), so nothing global changes here. */
@@ -144,6 +155,8 @@ export function AuthGate() {
         switchError,
         imported,
         onDismissImported: () => setImported(null),
+        lostAnswers,
+        onDismissLostAnswers: () => setLostAnswers(null),
       }}
     />
   );

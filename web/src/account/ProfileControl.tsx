@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { AuthUser, FirstRunReply, LearnerInfo } from "../../shared/wire.ts";
-import { useAppData } from "../app-data.ts";
+import { useAppData, type LostAnswers } from "../app-data.ts";
 import { Button, cx } from "../ui.tsx";
 
 // The header's "who is practising" control, beside Listen: the learner's
@@ -20,6 +20,9 @@ export interface AccountActions {
   /** What the first run could not import from data/, shown once. */
   imported: FirstRunReply["imported"] | null;
   onDismissImported: () => void;
+  /** Answers the last learner's queue was closed on, unsaved; shown once. */
+  lostAnswers: LostAnswers | null;
+  onDismissLostAnswers: () => void;
 }
 
 export function ProfileControl({ user, learner, learners, onSwitchLearner, onManageLearners, onLogout, switchError }: AccountActions) {
