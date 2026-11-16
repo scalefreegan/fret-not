@@ -15,7 +15,7 @@ import { sql } from "drizzle-orm";
 import type { ChatMessage } from "../shared/wire.ts";
 import type { LearnerCtx } from "./auth.ts";
 import { reapOnSignal } from "../../scripts/claude.mjs";
-import { handleChat, recoverInterruptedTurn, tutorBusy } from "./chat.ts";
+import { handleChat, NO_FILES_NOTE, recoverInterruptedTurn, tutorBusy } from "./chat.ts";
 import { gitRoot, linkOnTheWay, openWorkspace, processStarted, STALE_MS, sweepWorkspaces, workspaceBase, writable } from "./turn.ts";
 import { contentDir, loadContent, REPO_ROOT } from "./loader.ts";
 import { appendHistory, clearHistory, dataDir, readHistory } from "./store.ts";
@@ -1009,4 +1009,29 @@ test("a non-admin's turn is read-only, however clean content/ is, says why, and 
   assert.deepEqual((await readHistory(other.learner.id)).map((m) => m.role), ["user", "note", "assistant"]);
   assert.deepEqual(await hist(), [], "the admin's learner's chat is untouched");
   nothingLeftBehind();
+});
+
+test("a non-admin's turn with no clean copy to read gets no file tools, is not shown the repository's path, and the learner is told", async () => {
+  const other = await t.other();
+  caller = () => other;
+  // A committed symbolic link: openReadOnlyWorkspace refuses such a checkout.
+  fs.symlinkSync("content", path.join(repo, "a-link"));
+  git("add", "a-link");
+  git("commit", "-q", "-m", "a link");
+  try {
+    plan({ reply: "From the outline: an octave doubles the frequency." });
+    const { events } = await chat("what is an octave?");
+    assert.deepEqual(names(events), ["start", "note", "note", "message", "commit", "done"]);
+    assert.ok(events.some((e) => e.event === "note" && e.data.text === NO_FILES_NOTE), "the learner is told");
+    const [call] = callsSeen();
+    assert.equal(call.argv[call.argv.indexOf("--tools") + 1], "", "no tools at all");
+    const system = call.argv[call.argv.indexOf("--append-system-prompt") + 1];
+    assert.ok(system.includes("THIS TURN HAS NO FILE TOOLS"));
+    assert.ok(!system.includes(fs.realpathSync(repo)) && !system.includes(repo), "no path to go looking in");
+    assert.notEqual(call.cwd, fs.realpathSync(repo));
+    nothingLeftBehind();
+  } finally {
+    git("rm", "-q", "a-link");
+    git("commit", "-q", "-m", "no link");
+  }
 });

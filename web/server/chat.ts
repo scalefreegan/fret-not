@@ -83,7 +83,10 @@ export function historyWindow(messages: ChatMessage[], maxMessages = HISTORY_WIN
 
 /** Built per request from the curriculum on disk, so the tutor sees the
  *  lessons and concepts as they are now — including what it added last turn. */
-export function systemPrompt(c: Content, repoRoot: string = REPO_ROOT): string {
+/** `repoRoot` null: the turn has no copy of the repository to look in (no
+ *  file tools), so no path is named. */
+export function systemPrompt(c: Content, repoRoot: string | null = REPO_ROOT): string {
+  const where = repoRoot ? ` (${repoRoot})` : "";
   const tracks = c.tracks.map((t) => `  - ${t.id} — "${t.title}"`).join("\n");
   const levels = c.levels
     .map((l) => {
@@ -102,7 +105,7 @@ You have two jobs.
 
 1. TUTOR. The learner is an adult beginner with no music background, and curious. Answer what they asked about what they are looking at: patiently, in plain words, defining every term the first time you use it, never talking down. Be exactly right — frequencies, ratios, note names and spellings, string and fret positions, counts of beats. If you are not sure of a fact, say so rather than guess; prefer saying less to saying something loose. Tie the answer to what is on their screen (each message tells you the page, and on a lesson page the lesson file — Read it before answering about it, and Read the lesson's widgets and exercises rather than assuming). When their recent answers are listed, use them: a wrong answer shows what to explain. Pitches are sounding pitches (C4 is middle C). Keep answers short: a few sentences or a short list, not an essay. You cannot play sound, draw, or grade anything; the app generates and grades every exercise itself, so never tell the learner whether an answer they describe "would be marked" right — explain the music instead.
 
-2. LESSON AUTHOR. When the learner asks for more material — another lesson, more practice questions, a different explanation written into a lesson — you write it into the curriculum. The curriculum is the product. It lives under content/ in this repository (${repoRoot}): content/curriculum.yaml (tracks, levels, concepts), content/instruments/*.yaml, and content/lessons/<track>/*.md (markdown with YAML frontmatter, widgets as fenced \`\`\`widget blocks, exercises declared in the frontmatter).
+2. LESSON AUTHOR. When the learner asks for more material — another lesson, more practice questions, a different explanation written into a lesson — you write it into the curriculum. The curriculum is the product. It lives under content/ in this repository${where}: content/curriculum.yaml (tracks, levels, concepts), content/instruments/*.yaml, and content/lessons/<track>/*.md (markdown with YAML frontmatter, widgets as fenced \`\`\`widget blocks, exercises declared in the frontmatter).
    - Before you create or edit ANY content file, Read docs/CONTENT.md (the file format and the rules for writing lessons that work) and docs/CONTENT-REFERENCE.md (every widget and exercise kind with its parameters). The loader refuses a lesson whole if anything in it breaks the format.
    - Use only widgets, exercise kinds and parameters listed in docs/CONTENT-REFERENCE.md. You cannot add new ones; if something needs one, say so instead of inventing it.
    - A lesson may only name concepts that exist. To teach a new concept, add it to content/curriculum.yaml FIRST (id lowercase-with-dashes, title, level, track, requires), then write the lesson.
@@ -123,7 +126,7 @@ Rules:
 - You may create or edit files only under content/. Your tools are already restricted to that: do not try to write anywhere else, run commands, or touch web/, scripts/, docs/, data/ or anything else outside content/. If the learner asks for that (a new widget, a bug fix, a change to how the app works), say you can't and that it is a change to the app itself.
 - Do not edit content unless the learner asked for something that needs it. A question gets an answer, not a rewrite of the lesson.
 - Do not run git; the app commits the files you changed after each turn, so every change can be undone.
-- You are working in a private copy of the repository (${repoRoot}). It is merged into the learner's own files only after it passes the checks. When you mention a file to the learner, give its path inside the repository (content/lessons/…), never the absolute path of your copy.
+- You are working in a private copy of the repository${where}. It is merged into the learner's own files only after it passes the checks. When you mention a file to the learner, give its path inside the repository (content/lessons/…), never the absolute path of your copy.
 - Reply in plain prose, no headings. If — and only if — you created or edited files this turn, end your reply with ONE final line starting "Changed:" that says what, e.g. "Changed: added lesson core-3-blues-scale (level 3)." or "Changed: four more quiz questions in core-0-octave." Say in a sentence where the learner will find it. If you changed nothing, do not add that line.`;
 }
 
@@ -302,6 +305,12 @@ export function readOnlyBrief(why: NotReady): string {
   return `\n\nTHIS TURN IS READ-ONLY. You have no Write or Edit tool this time, because ${why.reason}. Answer questions as usual. If the learner asked for something that needs you to write (a new lesson, more questions, a rewrite), do not attempt it and do not paste the lesson into the chat: say in one or two sentences that you cannot write right now and why, and that this will fix it: ${why.fix} Do not add a "Changed:" line.`;
 }
 
+/** For a read-only turn that could not be given a clean copy to read. */
+export const NO_FILES_BRIEF = `\n\nTHIS TURN HAS NO FILE TOOLS: the app could not open a copy of the lessons for you to read, so you cannot Read any file, including the lesson the learner has open. Answer from the curriculum outline above, the page and recent answers in the message, and what you know, and say so if the question needs the lesson's own text.`;
+
+/** Told to the learner (once in a while) when that happens. */
+export const NO_FILES_NOTE = "The tutor could not open a copy of the lessons this time, so it answers without reading them. Tell the app's owner if this keeps happening (the server log says why).";
+
 /* -------------------------------- the run -------------------------------- */
 
 /** A turn that stopped for a reason the learner may read: the agent run
@@ -469,7 +478,7 @@ async function handleChatPost(req: IncomingMessage, res: ServerResponse, actor: 
       // What the turn starts from: the worktree's content/ (the last commit)
       // when it may write, the working tree's when it may only read.
       const before = loadContent(ws ? ws.content : lookWs ? lookWs.content : dir);
-      const system = systemPrompt(before, lookDir) + (readOnly ? readOnlyBrief(readOnly) : "");
+      const system = systemPrompt(before, noFiles ? null : lookDir) + (readOnly ? readOnlyBrief(readOnly) : "") + (noFiles ? NO_FILES_BRIEF : "");
       armShutdownCleanup();
       const userLine: ChatMessage = { role: "user", text: message, ts: now() };
       await appendHistory(learnerId, userLine);
@@ -480,6 +489,7 @@ async function handleChatPost(req: IncomingMessage, res: ServerResponse, actor: 
         const text = readOnlyNote(readOnly);
         if (!history.slice(-READ_ONLY_NOTE_EVERY).some((m) => m.role === "note" && m.text === text)) await tell(text);
       }
+      if (noFiles && !history.slice(-READ_ONLY_NOTE_EVERY).some((m) => m.role === "note" && m.text === NO_FILES_NOTE)) await tell(NO_FILES_NOTE);
       // A tutor commit an earlier server kept under a name (or applied) but
       // stopped before recording: said now, once, so no kept commit is ever
       // one the owner was not told about. An admin's business: only an
