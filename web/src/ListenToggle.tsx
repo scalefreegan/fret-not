@@ -90,6 +90,7 @@ export function ListenToggle() {
               {!listen.voiceId && <p className={cx("text-sm text-fg-3")}>Choose a voice to turn reading aloud on.</p>}
             </div>
           )}
+          {listen.error && <p role="alert" className="mt-2 text-sm text-bad">{listen.error}</p>}
         </div>
       )}
     </div>

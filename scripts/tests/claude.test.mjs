@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { buildArgs, childEnv, classifyExit, contentDenials, contentGrants, DEFAULT_MODEL, DENIED, reapOnSignal, REPO_ROOT, resultEnvelope, startClaude, sweepPromptDirs, toolWrites, TOOLS } from "../claude.mjs";
+import { buildArgs, childEnv, classifyExit, contentDenials, contentGrants, DEFAULT_MODEL, DENIED, reapOnSignal, REPO_ROOT, resultEnvelope, secretDenials, startClaude, sweepPromptDirs, toolWrites, TOOLS } from "../claude.mjs";
 
 /** The values following every occurrence of a flag, up to the next `--flag`. */
 function valuesOf(args, flag) {
@@ -82,7 +82,7 @@ test("argv: tools, grants, denials, permissions, model, output format", () => {
   assert.deepEqual(contentDenials(), gitRules);
   // …followed by the paths inside the grant that stay closed: no nested
   // repository under content/.
-  assert.deepEqual(denied, [...DENIED, ...gitRules]);
+  assert.deepEqual(denied, [...DENIED, ...gitRules, ...secretDenials(REPO_ROOT)]);
   for (const t of ["Bash", "WebFetch", "WebSearch", "NotebookEdit", "Task", "Agent"]) assert.ok(denied.includes(t), t);
   assert.ok(!denied.includes("ToolSearch"), "denying ToolSearch inverts (Atlas measured it serving every deferred tool)");
 
@@ -168,6 +168,20 @@ test("argv: the read-only profile can look but has no write tool, granted or oth
   for (const tool of [...DENIED, "Edit", "Write", "MultiEdit"]) assert.ok(denied.includes(tool), tool);
   assert.ok(args.includes("--restricted"));
   assert.deepEqual(valuesOf(args, "--permission-prompts"), ["none"]);
+  // Never the env files or data/, under the root the run is given.
+  const inWorktree = buildArgs({ tools: "read", repoRoot: "/tmp/wt/123" });
+  const rules = valuesOf(inWorktree, "--disallowedTools");
+  for (const tool of ["Read", "Glob", "Grep"]) {
+    for (const rule of [`${tool}(//tmp/wt/123/.env*)`, `${tool}(//tmp/wt/123/**/.env*)`, `${tool}(//tmp/wt/123/data/**)`]) assert.ok(rules.includes(rule), rule);
+  }
+  for (const rule of secretDenials(REPO_ROOT)) assert.ok(denied.includes(rule), rule);
+});
+
+test("argv: a writing turn may not read the env files or data/ either", () => {
+  const root = path.join(REPO_ROOT, "..", "wt");
+  const args = buildArgs({ contentDir: path.join(root, "content"), repoRoot: root });
+  const denied = valuesOf(args, "--disallowedTools");
+  for (const rule of secretDenials(root)) assert.ok(denied.includes(rule), rule);
 });
 
 /* ---- startClaude against a stand-in `claude` on PATH: no real CLI, no cost ---- */

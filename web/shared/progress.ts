@@ -2,8 +2,8 @@ import type { Concept, Content, Lesson } from "./content.ts";
 
 // Learner progress: per-concept mastery, spaced review, level unlocks and
 // placement. All functions are pure: they take a Progress and return a new
-// one; `now` is always passed in. The file shape is what the server stores
-// at data/profiles/<id>/progress.json.
+// one; `now` is always passed in. The shape is what the server stores in
+// learners.progress (docs/DATA.md).
 
 export interface ConceptProgress {
   /** Results of the most recent answers, oldest first, at most RECENT_WINDOW. */

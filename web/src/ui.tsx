@@ -114,6 +114,11 @@ export function NoteChip({ midi, children, className }: { midi: number; children
   );
 }
 
+/** A text field or select. */
+export const inputClass =
+  // 16px on a touch screen: iOS zooms the page when a smaller field takes focus.
+  "w-full rounded-xl border border-line-strong bg-panel px-3 py-1.5 text-sm text-fg pointer-coarse:text-base placeholder:text-fg-3 focus:border-accent focus:outline-none focus:ring-3 focus:ring-accent-soft disabled:opacity-60";
+
 export function Card({ children, className }: { children: ReactNode; className?: string }) {
   return <div className={cx("rounded-2xl border border-line bg-panel", className)}>{children}</div>;
 }

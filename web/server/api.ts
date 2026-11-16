@@ -1,13 +1,17 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Plugin } from "vite";
+import type { ErrorCode, ErrorReply } from "../shared/wire.ts";
+import { handleAuth, handleFirstRun, handleLearners, handleLogin, handleMe, pageLearner, sessionFor, type Ctx, type LearnerCtx, type PublicCtx } from "./auth.ts";
 import { handleChat, handleSettings, recoverInterruptedTurn } from "./chat.ts";
 import { handleContent } from "./content.ts";
+import { checkDatabase, setDb, type Db } from "./db.ts";
 import { handleProgress } from "./progress.ts";
-import { HttpError, sendJson } from "./sse.ts";
-import { handleTts } from "./tts.ts";
+import { HttpError, INTERNAL_ERROR, sendJson } from "./sse.ts";
+import { handleTts, handleTtsAudio } from "./tts.ts";
 
-// The whole "backend": dev-server-only middleware on the Vite server.
-// Single-user, localhost — no auth by design. Copied from Lingo Dojo.
+// The whole "backend": dev-server-only middleware on the Vite server, bound
+// to localhost. Copied from Lingo Dojo, with its logins (docs/DATA.md §Auth):
+// every route says who may call it, and wrap() enforces it.
 
 /**
  * Reject cross-origin requests. Without this, any website the user visits
@@ -16,7 +20,9 @@ import { handleTts } from "./tts.ts";
  * server would rewrite progress or spawn the tutor agent, which edits
  * content/. A request with no Origin (same-origin navigation, curl) is
  * allowed; one whose Origin host doesn't match the request Host is refused.
- * Pure, so a test pins the rule rather than the wiring.
+ * The session cookie is SameSite=Lax, which already keeps it off a
+ * cross-site POST; this check stays as the first wall. Pure, so a test pins
+ * the rule rather than the wiring.
  */
 export function sameOrigin(origin: string | undefined, host: string | undefined): boolean {
   if (!origin) return true; // no Origin → not a cross-site fetch
@@ -29,34 +35,75 @@ export function sameOrigin(origin: string | undefined, host: string | undefined)
 }
 
 type Handler = (req: IncomingMessage, res: ServerResponse) => void | Promise<void>;
+type PublicHandler = (req: IncomingMessage, res: ServerResponse, ctx: PublicCtx) => void | Promise<void>;
+type UserHandler = (req: IncomingMessage, res: ServerResponse, ctx: Ctx) => void | Promise<void>;
+type LearnerHandler = (req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx) => void | Promise<void>;
 
-/** Every route goes through here: same-origin check, JSON error envelope for
- *  anything thrown. No exceptions — a route that bypasses wrap() is the bug
- *  the same-origin rule in CLAUDE.md exists to prevent. */
-export function wrap(fn: Handler): Handler {
+/** Who may call a route: anyone (login, me, first run), any logged-in user
+ *  (the default), or an admin. */
+export type AuthLevel = "public" | "user" | "admin";
+
+export { INTERNAL_ERROR };
+
+/**
+ * Every route goes through here: the same-origin check first, then the
+ * session (cookie → user and active learner, auth.ts sessionFor), then the
+ * access level, then — for a learner-scoped route — the page's learner, then
+ * a JSON error envelope for anything thrown. No exceptions — a route that
+ * bypasses wrap() is the bug the rule in CLAUDE.md exists to prevent. The
+ * level defaults to "user", so a new route is protected unless it says
+ * otherwise: no session is a 401, a non-admin on an admin route a 403.
+ * `learner: true` is for a route that acts for the active learner (its
+ * progress, its settings, its tutor chat): the request's X-Learner-Id must be
+ * that learner, else a 409 `stale_learner` (auth.ts pageLearner), checked
+ * here once rather than in each handler.
+ */
+export function wrap(fn: PublicHandler, opts: { auth: "public" }): Handler;
+export function wrap(fn: LearnerHandler, opts: { auth?: "user" | "admin"; learner: true }): Handler;
+export function wrap(fn: UserHandler, opts?: { auth?: "user" | "admin" }): Handler;
+export function wrap(fn: PublicHandler | UserHandler | LearnerHandler, opts: { auth?: AuthLevel; learner?: boolean } = {}): Handler {
+  const level: AuthLevel = opts.auth ?? "user";
   return (req, res) => {
     if (!sameOrigin(req.headers.origin, req.headers.host)) {
-      sendJson(res, 403, { error: "cross-origin request refused" });
+      sendJson(res, 403, { error: "cross-origin request refused" } satisfies ErrorReply);
       return;
     }
     return Promise.resolve()
-      .then(() => fn(req, res))
+      .then(async () => {
+        const ctx = await sessionFor(req, res);
+        if (level !== "public") {
+          if (!ctx.user) throw new HttpError(401, "log in first");
+          if (level === "admin" && !ctx.user.isAdmin) throw new HttpError(403, "only an admin can do that");
+          if (opts.learner) pageLearner(req, ctx);
+        }
+        // The overloads tie each option set to its handler type; at this
+        // point a non-public route has a user, and a learner route a learner.
+        return (fn as PublicHandler)(req, res, ctx);
+      })
       .catch((e) => {
         // A bad or oversized body is the client's fault, not a crash.
-        const status = e instanceof HttpError ? e.status : 500;
-        if (status === 500) console.error(`[fret-not] ${req.method} ${req.url}:`, e);
+        const known = e instanceof HttpError;
+        const status = known ? e.status : 500;
+        if (!known) console.error(`[fret-not] ${req.method} ${req.url}:`, e);
         // Headers already out (an SSE stream mid-flight): there is no
         // envelope left to send, and sendJson's writeHead would throw INSIDE
         // this catch — an unhandled rejection, which under Node 26 exits the
         // dev server. Cut the socket so the client sees a broken response
         // rather than a hung one.
         if (res.headersSent) { res.destroy(); return; }
-        if (!res.writableEnded) sendJson(res, status, { error: String((e as Error)?.message || e) });
+        if (res.writableEnded) return;
+        // Only an HttpError's sentence is meant for the client; anything
+        // else (a database error, a bug) is logged above and answered with
+        // the generic line.
+        const reply: ErrorReply = known ? { error: e.message, ...(e.code ? { code: e.code as ErrorCode } : {}) } : { error: INTERNAL_ERROR };
+        sendJson(res, status, reply);
       });
   };
 }
 
-export function apiPlugins(): Plugin {
+export function apiPlugins(opts: { checkDatabase?: boolean; db?: Db; sweep?: boolean } = {}): Plugin {
+  // The HTTP tests hand in an in-process PGlite: the real routes, no server.
+  if (opts.db) setDb(opts.db);
   return {
     name: "fret-not-api",
     apply: "serve",
@@ -65,23 +112,46 @@ export function apiPlugins(): Plugin {
       // quit, killed or crashed) is cleared away. Never throws, and never
       // touches the repository's files: a turn does not write there until
       // it is finished and valid.
-      const swept = recoverInterruptedTurn();
-      if (swept.removed) console.log(`[fret-not] tutor: removed ${swept.removed} leftover work director${swept.removed === 1 ? "y" : "ies"}`);
-      // No database and no cache: the curriculum is re-read from content/ on
+      if (opts.sweep !== false) {
+        const swept = recoverInterruptedTurn();
+        if (swept.removed) console.log(`[fret-not] tutor: removed ${swept.removed} leftover work director${swept.removed === 1 ? "y" : "ies"}`);
+      }
+      // Logins (auth.ts). The three public routes are mounted on their own
+      // paths, ahead of /api/auth, so nothing else under it is public by
+      // accident.
+      server.middlewares.use("/api/auth/login", wrap(handleLogin, { auth: "public" }));
+      server.middlewares.use("/api/auth/me", wrap(handleMe, { auth: "public" }));
+      server.middlewares.use("/api/auth/first-run", wrap(handleFirstRun, { auth: "public" }));
+      server.middlewares.use("/api/auth", wrap(handleAuth));
+      server.middlewares.use("/api/learners", wrap(handleLearners));
+      // The curriculum is the same for everyone, re-read from content/ on
       // every request, so an edit by the tutor or an editor is live at once.
-      server.middlewares.use("/api/content", wrap(handleContent));
-      // Learner progress: JSON under data/profiles/<id>/.
-      server.middlewares.use("/api/progress", wrap(handleProgress));
-      // The tutor (SSE; a valid turn is committed and fast-forwarded in) and its
-      // model setting.
-      server.middlewares.use("/api/chat", wrap(handleChat));
-      server.middlewares.use("/api/settings", wrap(handleSettings));
+      server.middlewares.use("/api/content", wrap(handleContent, { learner: true }));
+      // The learner's own: progress, Listen settings (and, for an admin, the
+      // tutor's model), the tutor chat. A non-admin's tutor is read-only.
+      server.middlewares.use("/api/progress", wrap(handleProgress, { learner: true }));
+      server.middlewares.use("/api/settings", wrap(handleSettings, { learner: true }));
+      server.middlewares.use("/api/chat", wrap(handleChat, { learner: true }));
       // Text-to-speech for Listen mode: ElevenLabs, proxied so the API key
-      // never reaches the browser, with its audio cached under data/.
-      server.middlewares.use("/api/tts", wrap(handleTts));
+      // never reaches the browser, its audio cached under data/tts-cache/
+      // (content-addressed, so shared by every learner). The cached audio is
+      // played by an <audio src>, which sends the cookie but cannot send the
+      // learner header: it needs a login, not a learner.
+      server.middlewares.use("/api/tts/audio", wrap(handleTtsAudio));
+      server.middlewares.use("/api/tts", wrap(handleTts, { learner: true }));
       // Anything else under /api is a typo, not the SPA shell: answer in the
       // envelope the client already parses instead of index.html.
-      server.middlewares.use("/api", wrap((_req, res) => sendJson(res, 404, { error: "no such route" })));
+      server.middlewares.use("/api", wrap((_req, res) => sendJson(res, 404, { error: "no such route" }), { auth: "public" }));
+      // The boot check (docs/DATA.md): Vite awaits this hook, so a database
+      // that is missing, down or behind on migrations stops `npm run dev`
+      // with checkDatabase's message (what to run) instead of starting a
+      // server whose first database route fails far from the cause. The
+      // HTTP tests mount the plugin with checkDatabase: false and their own
+      // PGlite (db); they never need a Postgres server.
+      if (opts.checkDatabase === false) return;
+      return checkDatabase().then(({ applied }) => {
+        server.config.logger.info(`  database ready (${applied} migration(s) applied)`);
+      });
     },
   };
 }

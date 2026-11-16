@@ -158,7 +158,7 @@ export function HomePage() {
 
       {started && (
         <p className="mt-10 text-center text-sm text-fg-3">
-          <button type="button" className="min-h-11 px-2 py-3 underline hover:text-fg" onClick={() => { if (window.confirm("Start over? Your current progress is archived in data/profiles/default/, not deleted.")) void reset(); }}>Reset progress</button>
+          <button type="button" className="min-h-11 px-2 py-3 underline hover:text-fg" onClick={() => { if (window.confirm("Start over? Your current progress is kept as a backup, not deleted.")) void reset(); }}>Reset progress</button>
           {" · "}
           <a className="inline-flex min-h-11 items-center px-2 py-3 underline hover:text-fg" href={href("placement")}>Placement check</a>
         </p>

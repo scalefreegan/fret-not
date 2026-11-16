@@ -4,6 +4,7 @@ import type { Question } from "../../shared/exercise-types.ts";
 import { generateQuestions } from "../../shared/exercises.ts";
 import { isLessonDone, isMastered, LESSON_DONE_SCORE } from "../../shared/progress.ts";
 import { speakableText } from "../../shared/tts/speakable.ts";
+import { backTarget, nextStop, skipTarget, type StopKind } from "../../shared/tts/transport.ts";
 import { ExerciseRunner, type Answered } from "../exercises/Runner.tsx";
 import { Markdown, SpokenMarkdown } from "../markdown.tsx";
 import { go, href, scrollTop } from "../router.ts";
@@ -68,50 +69,71 @@ export function LessonPage({ lesson, onAnswer }: { lesson: Lesson; onAnswer?: (a
   useEffect(() => () => void savePartial(), [savePartial]);
 
   // Listen mode: narrate the reading phase's prose blocks in order. A
-  // widget block pauses narration (the learner presses Continue) rather
-  // than being skipped or read past — CLAUDE.md's "show before telling"
-  // lessons put the widget right where there is something to try, and
-  // reading on over it would talk past what the learner is looking at.
+  // widget block pauses narration (the learner presses Continue, or Skip on
+  // the transport) rather than being skipped or read past — CLAUDE.md's
+  // "show before telling" lessons put the widget right where there is
+  // something to try, and reading on over it would talk past what the
+  // learner is looking at. Where Back and Skip go is decided in
+  // web/shared/tts/transport.ts.
   const listen = useListen();
   const [activeBlock, setActiveBlock] = useState<number | null>(null);
   const [activeWord, setActiveWord] = useState<number | null>(null);
   const [waitingAt, setWaitingAt] = useState<number | null>(null);
+  const kinds = useMemo<StopKind[]>(() => lesson.blocks.map((b) => (b.type === "widget" ? "widget" : speakableText(b.markdown).text.trim() ? "text" : "empty")), [lesson]);
+  /** Where the narration is, for the transport (read outside a render). */
+  const place = useRef<number | null>(null);
+  const clear = useCallback(() => {
+    place.current = null;
+    setActiveBlock(null);
+    setActiveWord(null);
+    setWaitingAt(null);
+  }, []);
   const goTo = useCallback(
-    (idx: number) => {
-      const blocks = lesson.blocks;
-      if (idx >= blocks.length) {
-        setActiveBlock(null);
-        setActiveWord(null);
-        setWaitingAt(null);
+    (from: number | null) => {
+      const idx = from === null ? null : nextStop(kinds, from);
+      if (idx === null) {
+        listen.stop();
+        clear();
         return;
       }
-      const b = blocks[idx];
+      place.current = idx;
+      const b = lesson.blocks[idx];
       if (b.type === "widget") {
+        listen.stop();
         setWaitingAt(idx);
         setActiveBlock(null);
         setActiveWord(null);
         return;
       }
-      const { text } = speakableText(b.markdown);
-      if (!text.trim()) {
-        goTo(idx + 1); // a block with nothing but a widget fence, say
-        return;
-      }
       setWaitingAt(null);
       setActiveBlock(idx);
       setActiveWord(null);
-      listen.speak(text, { onWord: setActiveWord, onEnd: () => goTo(idx + 1), onError: () => goTo(idx + 1) });
+      listen.speak(speakableText(b.markdown).text, { onWord: setActiveWord, onEnd: () => goTo(idx + 1), onError: () => goTo(idx + 1) });
     },
-    [lesson, listen],
+    [lesson, kinds, listen, clear],
   );
+  // The transport's Start/Back/Skip/Stop for this lesson, while it is being
+  // read. Through a ref, so registering does not churn with every word.
+  const goToRef = useRef(goTo);
+  useEffect(() => {
+    goToRef.current = goTo;
+  }, [goTo]);
+  const { registerSequence } = listen;
+  useEffect(() => {
+    if (phase !== "read") return;
+    return registerSequence({
+      start: () => goToRef.current(place.current === null ? 0 : kinds[place.current] === "widget" ? place.current + 1 : place.current),
+      back: (elapsed) => goToRef.current(backTarget(kinds, place.current, elapsed)),
+      skip: () => goToRef.current(skipTarget(kinds, place.current)),
+      stop: clear,
+    });
+  }, [phase, kinds, registerSequence, clear]);
   useEffect(() => {
     if (phase !== "read" || !listen.on || !listen.voiceId) return;
     goTo(0);
     return () => {
       listen.stop();
-      setActiveBlock(null);
-      setActiveWord(null);
-      setWaitingAt(null);
+      clear();
     };
     // Re-run only on what should restart the passage from the top: Listen
     // turned on/off, a different voice, leaving the reading phase, or a

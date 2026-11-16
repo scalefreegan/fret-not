@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useState } from "react";
 import type { Content } from "../shared/content.ts";
 import type { AnswerResult, Progress } from "../shared/progress.ts";
+import type { SaveResult } from "../shared/answer-queue.ts";
 
 // The app's shared data as pages see it: the types, the context and the hooks
 // that read it. The provider that fills it is in state.tsx. They are separate
@@ -16,7 +17,7 @@ import type { AnswerResult, Progress } from "../shared/progress.ts";
  *  `recovered` when the progress file was unreadable, was set aside, and
  *  this save started a fresh one. On `ok: false` nothing was recorded: the
  *  caller keeps the answers and offers a retry. */
-export type SaveResult = { ok: true; dropped: number; lessonDropped: boolean; recovered: boolean } | { ok: false; error: string };
+export type { SaveResult };
 
 /** The save queue every page shares. `pending`: something is still waiting
  *  (answers, or a lesson to mark done). `status: "failed"`: the last attempt
@@ -32,6 +33,8 @@ export interface Saver {
 }
 
 export interface AppData {
+  /** The learner this app shows; every call it makes names them. */
+  learnerId: string;
   content: Content | null;
   progress: Progress;
   /** False until the saved progress has arrived: until then `progress` is an
@@ -92,3 +95,9 @@ export function useAnswerSaver(): {
   const save = mine !== null && mine !== "saving" && !mine.ok && !saver.pending && saver.status === "idle" ? SAVED : mine;
   return { save, unsaved: saver.unsaved, add, retry };
 }
+
+/** Fired on the window when a learner's answer queue closes (a switch, a
+ *  logout, an expired session, another tab's change) with answers still
+ *  unsaved; AuthGate keeps it and the app says so until dismissed. */
+export const ANSWERS_LOST_EVENT = "fret-not:answers-lost";
+export type LostAnswers = { answers: number; lesson: boolean };

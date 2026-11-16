@@ -1,4 +1,5 @@
 import { wordAt, type SpokenWord } from "../../shared/tts/alignment.ts";
+import { seekTarget } from "../../shared/tts/transport.ts";
 import { speak as requestSpeech } from "../api/tts.ts";
 import { claimStage } from "./index.ts";
 
@@ -12,11 +13,21 @@ import { claimStage } from "./index.ts";
 // note or starting a widget's sound stops the voice, and starting the voice
 // stops a widget that was droning.
 
+/** loading: fetching the audio; playing; paused; done: ended, failed or
+ *  stopped (no further callbacks). */
+export type NarrationState = "loading" | "playing" | "paused" | "done";
+
 export interface NarrationHandle {
   pause(): void;
   resume(): void;
   /** Stop for good; no further callbacks fire. */
   stop(): void;
+  /** Move by `deltaSeconds` (negative: back) within this passage; the word
+   *  highlight follows at once. Ignored until the audio has loaded. */
+  seek(deltaSeconds: number): void;
+  /** Seconds into the passage (0 while loading). */
+  readonly currentTime: number;
+  readonly state: NarrationState;
 }
 
 export interface NarrateOptions {
@@ -28,21 +39,31 @@ export interface NarrateOptions {
   /** The request failed, or the browser could not play the audio (missing
    *  voice, no ELEVENLABS_API_KEY, offline, a blocked autoplay). */
   onError?: (e: Error) => void;
+  /** Called on every change of `state`. */
+  onState?: (state: NarrationState) => void;
 }
 
 /** Speak `text` in the learner's chosen voice. Starts fetching at once;
  *  playback begins once the (possibly cached) audio and its word timings
  *  are back. Returns a handle to pause, resume or stop it early. */
-export function narrate(text: string, opts: NarrateOptions = {}): NarrationHandle {
+export function narrate(learnerId: string, text: string, opts: NarrateOptions = {}): NarrationHandle {
   let audio: HTMLAudioElement | null = null;
   let words: readonly SpokenWord[] = [];
   let lastWord = -1;
   let stopped = false;
+  let state: NarrationState = "loading";
   let release: () => void = () => {};
+  const setState = (next: NarrationState) => {
+    if (state === next) return;
+    state = next;
+    opts.onState?.(next);
+  };
 
-  const onTimeUpdate = () => {
+  /** `fresh`: search the words from the start (after a seek, which can go
+   *  back), not on from the last one. */
+  const onTimeUpdate = (fresh: boolean | Event = false) => {
     if (!audio || !words.length) return;
-    const i = wordAt(words, audio.currentTime * 1000, Math.max(0, lastWord));
+    const i = wordAt(words, audio.currentTime * 1000, fresh === true ? 0 : Math.max(0, lastWord));
     if (i !== lastWord) {
       lastWord = i;
       opts.onWord?.(i);
@@ -52,21 +73,27 @@ export function narrate(text: string, opts: NarrateOptions = {}): NarrationHandl
     if (stopped) return;
     stopped = true;
     release();
+    setState("done");
     opts.onEnd?.();
   };
   const fail = (e: unknown) => {
     if (stopped) return;
     stopped = true;
     release();
+    setState("done");
     opts.onError?.(e instanceof Error ? e : new Error(String(e)));
   };
 
   const handle: NarrationHandle = {
     pause() {
-      audio?.pause();
+      if (stopped || !audio) return;
+      audio.pause();
+      setState("paused");
     },
     resume() {
-      if (!stopped) void audio?.play().catch(fail);
+      if (stopped || !audio) return;
+      setState("playing");
+      void audio.play().catch(fail);
     },
     stop() {
       if (stopped) return;
@@ -74,10 +101,22 @@ export function narrate(text: string, opts: NarrateOptions = {}): NarrationHandl
       audio?.pause();
       audio?.removeEventListener("timeupdate", onTimeUpdate);
       release();
+      setState("done");
+    },
+    seek(deltaSeconds: number) {
+      if (stopped || !audio) return;
+      audio.currentTime = seekTarget(audio.currentTime, deltaSeconds, audio.duration);
+      onTimeUpdate(true);
+    },
+    get currentTime() {
+      return audio ? audio.currentTime : 0;
+    },
+    get state() {
+      return state;
     },
   };
 
-  void requestSpeech(text).then(
+  void requestSpeech(learnerId, text).then(
     ({ audioUrl, words: w }) => {
       if (stopped) return; // stop() came in before the request finished
       words = w;
@@ -89,6 +128,7 @@ export function narrate(text: string, opts: NarrateOptions = {}): NarrationHandl
       // the fetch must not steal (and then immediately release) a stage no
       // widget asked to give up.
       release = claimStage(() => handle.stop());
+      setState("playing");
       void audio.play().catch(fail);
     },
     fail,

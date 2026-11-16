@@ -7,9 +7,9 @@ import path from "node:path";
 import { after, before, test } from "node:test";
 import type { TtsSpeakReply, TtsVoicesReply } from "../shared/wire.ts";
 import { apiKey, cacheKey, envFile, handleTts, isConfigured, parseEnv, speakRequest, voicesRequest } from "./tts.ts";
-import { setTtsModelId, setTtsVoiceId, dataDir } from "./store.ts";
-import { HttpError, sendJson } from "./sse.ts";
+import { dataDir, getListenSettings, setListenSettings } from "./store.ts";
 import { REPO_ROOT } from "./loader.ts";
+import { asLearner, testLearner, type TestLearner } from "./test-db.ts";
 
 /* -------------------------- pure helpers, no server ------------------------ */
 
@@ -81,6 +81,10 @@ let server: http.Server;
 let base = "";
 const saved = { data: process.env.FRET_DATA_DIR, envFile: process.env.FRET_ENV_FILE };
 let originalFetch: typeof fetch;
+let t: TestLearner;
+const ref = () => ({ userId: t.ctx.user.id, learnerId: t.ctx.learner.id });
+const setTtsVoiceId = (ttsVoiceId: string | null) => setListenSettings(ref(), { ttsVoiceId });
+const setTtsModelId = (ttsModelId: string) => setListenSettings(ref(), { ttsModelId });
 let fetchCalls = 0;
 
 const ALIGNMENT = {
@@ -121,12 +125,8 @@ before(async () => {
     return new Response("not found", { status: 404 });
   }) as typeof fetch;
 
-  server = http.createServer((req, res) => {
-    req.url = (req.url ?? "/").replace(/^\/api\/tts/, "") || "/";
-    Promise.resolve()
-      .then(() => handleTts(req, res))
-      .catch((e) => sendJson(res, e instanceof HttpError ? e.status : 500, { error: String((e as Error)?.message || e) }));
-  });
+  t = await testLearner();
+  server = http.createServer(asLearner("/api/tts", handleTts, () => t.ctx));
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 });
@@ -142,6 +142,7 @@ after(async () => {
       else process.env[key] = value;
     }
     if (tmp) fs.rmSync(tmp, { recursive: true, force: true });
+    await t?.close();
   }
 });
 
@@ -150,21 +151,21 @@ test("isConfigured reflects whether a key is reachable at all", () => {
 });
 
 test("POST /speak without a chosen voice refuses with a clear message", async () => {
-  setTtsVoiceId(null);
+  await setTtsVoiceId(null);
   const { status, json } = await call("POST", "/speak", { text: "hello" });
   assert.equal(status, 400);
   assert.match((json as { error: string }).error, /choose a voice/i);
 });
 
 test("POST /speak rejects a missing or empty text", async () => {
-  setTtsVoiceId("v1");
+  await setTtsVoiceId("v1");
   const { status } = await call("POST", "/speak", { text: "" });
   assert.equal(status, 400);
 });
 
 test("POST /speak calls ElevenLabs once, caches the result, and a repeat play is a cache hit (no second call)", async () => {
-  setTtsVoiceId("v1");
-  setTtsModelId("eleven_v4");
+  await setTtsVoiceId("v1");
+  await setTtsModelId("eleven_v4");
   fetchCalls = 0;
   const first = await call("POST", "/speak", { text: "hi there" });
   assert.equal(first.status, 200);
@@ -186,10 +187,24 @@ test("POST /speak calls ElevenLabs once, caches the result, and a repeat play is
 });
 
 test("GET /voices proxies the ElevenLabs catalog", async () => {
-  setTtsVoiceId("v1");
+  await setTtsVoiceId("v1");
   const { status, json } = await call("GET", "/voices");
   assert.equal(status, 200);
   assert.deepEqual((json as TtsVoicesReply).voices, [{ id: "v1", name: "Test Voice" }]);
+});
+
+test("Listen settings belong to the learner: another learner's voice is their own", async () => {
+  await setTtsVoiceId("v1");
+  const other = await t.other();
+  const theirs = { userId: other.user.id, learnerId: other.learner.id };
+  assert.equal((await getListenSettings(theirs)).ttsVoiceId, null);
+  await setListenSettings(theirs, { ttsVoiceId: "v2", listenMode: true });
+  const mine = await getListenSettings(ref());
+  assert.deepEqual([mine.ttsVoiceId, mine.listenMode], ["v1", false]);
+  // A learner reached through the wrong account is not found, and not written.
+  const stray = await setListenSettings({ userId: t.ctx.user.id, learnerId: other.learner.id }, { ttsVoiceId: "v3" });
+  assert.equal(stray.ttsVoiceId, null, "reads back as nobody's");
+  assert.equal((await getListenSettings(theirs)).ttsVoiceId, "v2");
 });
 
 test("GET /audio/<unknown hash>.mp3 is a 404, not a crash", async () => {

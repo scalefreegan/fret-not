@@ -1,42 +1,25 @@
-import fs from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import path from "node:path";
+import { eq } from "drizzle-orm";
 import { applyPlacement, emptyProgress, placementTracks, RECENT_WINDOW, recordAnswers, recordLesson, rememberOpened, REVIEW_INTERVAL_DAYS, type AnswerResult, type Progress } from "../shared/progress.ts";
-import { isId, loadContent, REPO_ROOT } from "./loader.ts";
+import { forLearner, forUser } from "../../scripts/db/owned.ts";
+import { learners, progressBackups } from "../../scripts/db/schema.ts";
 import type { AnswersReply, ProgressReply } from "../shared/wire.ts";
+import { STALE_LEARNER, type LearnerCtx } from "./auth.ts";
+import { rawDb, type Db } from "./db.ts";
+import { isId, loadContent } from "./loader.ts";
 import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./sse.ts";
 
-// Learner progress on disk and over HTTP. One JSON file per profile:
+// Learner progress in the database and over HTTP. One jsonb value per
+// learner, `learners.progress` (docs/DATA.md §Schema): the Progress object of
+// shared/progress.ts, exactly as the JSON file held it before logins.
 //
-//   data/profiles/<profile>/progress.json
-//
-// read on every request and rewritten whole (temp file + rename) on every
-// change — the app is single-user and the file is a few KB, so a cache would
-// only add a way for the file and the process to disagree. The rules
+// Read on every request and rewritten whole on every change, inside one
+// transaction that holds the learner row's lock, so two saves at once (two
+// tabs of one learner) queue rather than one undoing the other. The rules
 // (mastery, review boxes, unlocks) live in shared/progress.ts; this module
-// only validates input, loads, applies and saves.
-
-/** v1 has one learner. The id is a parameter everywhere below so a profile
- *  switcher is a route change, not a storage change. */
-export const DEFAULT_PROFILE = "default";
-
-/** FRET_DATA_DIR when set (resolved against the repo root), else <repo>/data.
- *  Read per call so a test can redirect it. */
-export function dataDir(): string {
-  const override = process.env.FRET_DATA_DIR;
-  return override ? path.resolve(REPO_ROOT, override) : path.join(REPO_ROOT, "data");
-}
-
-const PROFILE_RE = /^[a-z0-9]+(-[a-z0-9]+)*$/;
-function profileDir(profile: string): string {
-  // The id becomes a directory name; refuse anything that could climb out.
-  if (!PROFILE_RE.test(profile)) throw new HttpError(400, `bad profile id: ${JSON.stringify(profile)}`);
-  return path.join(dataDir(), "profiles", profile);
-}
-const progressPath = (profile: string) => path.join(profileDir(profile), "progress.json");
-
-/** Safe in a file name on every filesystem, and sorts by time. */
-const stamp = (now: Date) => now.toISOString().replace(/[:.]/g, "-");
+// only validates input, loads, repairs, applies and saves. Every read and
+// write goes through the account's own scope (forUser): one account can
+// never reach another's learner.
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 
@@ -134,61 +117,53 @@ export function repairProgress(v: unknown, now: Date): { progress: Progress; cha
 
 export interface Loaded {
   progress: Progress;
-  /** True when the stored file could not be used as it was: either it was
-   *  unreadable and an empty progress took its place, or some entries in it
-   *  were bad and were dropped. Either way the original is kept at
-   *  `recoveredTo`. */
+  /** True when the stored value could not be used as it was: either it was
+   *  not a progress value at all and an empty progress took its place, or
+   *  some entries in it were bad and were dropped. Either way the original
+   *  is kept in progress_backups, with the id `recoveredTo`. */
   recovered: boolean;
-  /** Where the original file went (absolute path), when `recovered`. */
+  /** The progress_backups row that keeps the original, when `recovered`. */
   recoveredTo?: string;
 }
 
-/** A missing file is a new learner. A file that exists but cannot be used as
- *  it stands is never overwritten in place: the original is kept as
- *  progress.corrupt-<time>.json (so nothing the learner earned is destroyed
- *  by a bad write or a stray edit). If only some entries are bad, those are
- *  dropped and the rest is used; if the file is not a progress file at all,
- *  an empty progress takes its place. */
-export function loadProgress(profile: string, now: Date): Loaded {
-  const file = progressPath(profile);
-  let text: string;
-  try {
-    text = fs.readFileSync(file, "utf8");
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") return { progress: emptyProgress(profile, now), recovered: false };
-    throw e;
-  }
-  const aside = path.join(profileDir(profile), `progress.corrupt-${stamp(now)}.json`);
-  let repaired: ReturnType<typeof repairProgress> = null;
-  try {
-    repaired = repairProgress(JSON.parse(text), now);
-  } catch {
-    /* not JSON: fall through to recovery */
-  }
-  if (repaired && !repaired.changed) return { progress: { ...repaired.progress, profile }, recovered: false };
+/**
+ * The stored value made usable, inside the caller's transaction. A value
+ * that cannot be used as it stands is never just overwritten: the original
+ * is copied to progress_backups first (so nothing the learner earned is
+ * destroyed by a bad write or a stray edit). If only some entries are bad,
+ * those are dropped and the rest is used; if it is not a progress value at
+ * all, an empty progress takes its place.
+ */
+export async function repairStored(tx: Db, learnerId: string, stored: unknown, now: Date): Promise<Loaded> {
+  const repaired = repairProgress(stored, now);
+  if (repaired && !repaired.changed) return { progress: { ...repaired.progress, profile: learnerId }, recovered: false };
+  const [backup] = await forLearner(tx, learnerId).insert(progressBackups, { reason: "corrupt", data: stored ?? {} });
   if (repaired) {
-    // Usable apart from some entries: keep the original beside it, and save
-    // the cleaned file so the next read does not report it again.
-    fs.copyFileSync(file, aside);
-    const progress = { ...repaired.progress, profile };
-    saveProgress(profile, progress);
-    console.error(`[fret-not] ${file} had entries that could not be read; dropped them (the original is at ${aside})`);
-    return { progress, recovered: true, recoveredTo: aside };
+    console.error(`[fret-not] learner ${learnerId}: progress had entries that could not be read; dropped them (the original is progress_backups ${backup.id})`);
+    return { progress: { ...repaired.progress, profile: learnerId }, recovered: true, recoveredTo: backup.id };
   }
-  fs.renameSync(file, aside);
-  console.error(`[fret-not] ${file} was not a valid progress file; moved it to ${aside} and started empty`);
-  return { progress: emptyProgress(profile, now), recovered: true, recoveredTo: aside };
+  console.error(`[fret-not] learner ${learnerId}: progress was not a valid progress value; kept it as progress_backups ${backup.id} and started empty`);
+  return { progress: emptyProgress(learnerId, now), recovered: true, recoveredTo: backup.id };
 }
 
-/** Write whole, atomically: a crash mid-write leaves the old file, not half
- *  a new one. */
-export function saveProgress(profile: string, progress: Progress): void {
-  const dir = profileDir(profile);
-  fs.mkdirSync(dir, { recursive: true });
-  const file = progressPath(profile);
-  const tmp = `${file}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, `${JSON.stringify(progress, null, 2)}\n`);
-  fs.renameSync(tmp, file);
+/**
+ * Read the learner's progress under its row lock, repaired, and hand it to
+ * `change`, which returns the progress to save (or null to save nothing)
+ * and what to reply. A repaired value is saved even when `change` saves
+ * nothing, so the next read does not report the same damage again. The
+ * learner gone meanwhile (archived in another tab) is the stale-learner 409.
+ */
+async function withProgress<T>(ctx: LearnerCtx, now: Date, change: (loaded: Loaded, tx: Db) => Promise<{ save: Progress | null; reply: T }>): Promise<T> {
+  return rawDb().transaction(async (tx) => {
+    const mine = forUser(tx, ctx.user.id);
+    const [row] = await tx.select({ progress: learners.progress }).from(learners).where(mine.where(learners, eq(learners.id, ctx.learner.id))).for("update");
+    if (!row) throw new HttpError(409, "choose who's learning first", STALE_LEARNER);
+    const loaded = await repairStored(tx, ctx.learner.id, row.progress, now);
+    const { save, reply } = await change(loaded, tx);
+    const out = save ?? (loaded.recovered ? loaded.progress : null);
+    if (out) await mine.update(learners, { progress: out as unknown as Record<string, unknown> }, eq(learners.id, ctx.learner.id));
+    return reply;
+  });
 }
 
 interface AnswersBody {
@@ -216,12 +191,20 @@ function parseLesson(raw: unknown): { id: string; score: number } | null {
   return { id: raw.id, score: raw.score };
 }
 
-function reply(res: ServerResponse, loaded: Loaded): void {
-  sendJson(res, 200, { progress: loaded.progress, ...(loaded.recovered ? { recovered: true, recoveredTo: loaded.recoveredTo } : {}) } satisfies ProgressReply);
+function replyOf(loaded: Loaded, progress: Progress = loaded.progress): ProgressReply {
+  return { progress, ...(loaded.recovered ? { recovered: true, recoveredTo: loaded.recoveredTo } : {}) };
 }
 
-/** Mounted at /api/progress behind wrap() (api.ts), which turns a thrown
- *  HttpError into its status.
+/** Which levels are open is only worth remembering when the whole curriculum
+ *  loaded. While a lesson is refused, its concepts look as if nothing tested
+ *  them, the level asks less than it should, and a level opened on that
+ *  basis would stay open for good. */
+function canRemember(content: ReturnType<typeof loadContent>): boolean {
+  return content.levels.length > 0 && content.concepts.length > 0 && content.problems.length === 0;
+}
+
+/** Mounted at /api/progress behind wrap() (api.ts) for the page's learner,
+ *  which turns a thrown HttpError into its status.
  *
  *    GET  /api/progress             → { progress }
  *    POST /api/progress/answers     { results, lesson? } → { progress, dropped, lessonDropped, recovered }
@@ -231,37 +214,30 @@ function reply(res: ServerResponse, loaded: Loaded): void {
  *                                   completion was not recorded (its id is not
  *                                   a lesson the curriculum has right now)
  *    POST /api/progress/placement   { level } → { progress }
- *    POST /api/progress/reset       → { progress } (the old file is archived)
+ *    POST /api/progress/reset       → { progress } (the old progress is kept in progress_backups)
  *
  *  Any response may also carry `recovered: true` and `recoveredTo` (see
- *  loadProgress); the answers reply always states `recovered`. */
-/** Which levels are open is only worth remembering when the whole curriculum
- *  loaded. While a lesson is refused, its concepts look as if nothing tested
- *  them, the level asks less than it should, and a level opened on that
- *  basis would stay open for good. */
-function canRemember(content: ReturnType<typeof loadContent>): boolean {
-  return content.levels.length > 0 && content.concepts.length > 0 && content.problems.length === 0;
-}
-
-export async function handleProgress(req: IncomingMessage, res: ServerResponse): Promise<void> {
+ *  repairStored); the answers reply always states `recovered`. */
+export async function handleProgress(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx): Promise<void> {
   const route = subPath(req);
-  const profile = DEFAULT_PROFILE;
   const now = new Date();
 
   if (route === "") {
     if (req.method !== "GET") return methodNotAllowed(res, "GET");
-    const loaded = loadProgress(profile, now);
     // Note which levels are open now, so they stay open if the curriculum
-    // grows before the next answer. Only an existing learner's file is
-    // written (a new learner has nothing to protect, and GET creates nothing),
-    // and only when the curriculum can be read and the record moves.
+    // grows before the next answer. Only for a learner who has done
+    // something (a new one has nothing to protect, and GET records nothing
+    // for them), and only when the curriculum can be read and the record
+    // moves.
     const content = loadContent();
-    const noted = canRemember(content) ? rememberOpened(content, loaded.progress) : loaded.progress;
-    if (noted.openedLevel !== loaded.progress.openedLevel && fs.existsSync(progressPath(profile))) {
-      saveProgress(profile, noted);
-      return reply(res, { ...loaded, progress: noted });
-    }
-    return reply(res, loaded);
+    const out = await withProgress(ctx, now, async (loaded) => {
+      const p = loaded.progress;
+      const started = Object.keys(p.concepts).length > 0 || Object.keys(p.lessons).length > 0 || p.placedLevel > 0;
+      const noted = started && canRemember(content) ? rememberOpened(content, p) : p;
+      const moved = noted.openedLevel !== p.openedLevel;
+      return { save: moved ? noted : null, reply: replyOf(loaded, noted) };
+    });
+    return sendJson(res, 200, out);
   }
 
   if (route !== "answers" && route !== "placement" && route !== "reset") {
@@ -290,19 +266,17 @@ export async function handleProgress(req: IncomingMessage, res: ServerResponse):
     const conceptIds = new Set(content.concepts.map((c) => c.id));
     const kept = unreadable ? results : results.filter((r) => conceptIds.has(r.concept));
     const dropped = results.length - kept.length;
-    const loaded = loadProgress(profile, now);
-    let progress = recordAnswers(loaded.progress, kept, now);
-    let lessonDropped = false;
-    if (lesson) {
-      if (unreadable || content.lessons.some((l) => l.id === lesson.id)) progress = recordLesson(progress, lesson.id, lesson.score, now);
-      else lessonDropped = true;
-    }
-    if (canRemember(content)) progress = rememberOpened(content, progress);
-    saveProgress(profile, progress);
+    const lessonKnown = !lesson || unreadable || content.lessons.some((l) => l.id === lesson.id);
+    const out = await withProgress(ctx, now, async (loaded) => {
+      let progress = recordAnswers(loaded.progress, kept, now);
+      if (lesson && lessonKnown) progress = recordLesson(progress, lesson.id, lesson.score, now);
+      if (canRemember(content)) progress = rememberOpened(content, progress);
+      const reply: AnswersReply = { progress, dropped, lessonDropped: !lessonKnown, recovered: loaded.recovered, ...(loaded.recoveredTo ? { recoveredTo: loaded.recoveredTo } : {}) };
+      return { save: progress, reply };
+    });
     if (dropped) console.warn(`[fret-not] progress: ${dropped} answer(s) not recorded: their concept id is not in the curriculum`);
-    if (lessonDropped) console.warn(`[fret-not] progress: completion of lesson "${lesson?.id}" not recorded: no such lesson is loaded`);
-    sendJson(res, 200, { progress, dropped, lessonDropped, recovered: loaded.recovered, ...(loaded.recoveredTo ? { recoveredTo: loaded.recoveredTo } : {}) } satisfies AnswersReply);
-    return;
+    if (!lessonKnown) console.warn(`[fret-not] progress: completion of lesson "${lesson?.id}" not recorded: no such lesson is loaded`);
+    return sendJson(res, 200, out);
   }
 
   if (route === "placement") {
@@ -314,20 +288,22 @@ export async function handleProgress(req: IncomingMessage, res: ServerResponse):
     if (typeof level !== "number" || !(content.levels.some((l) => l.id === level) || (content.levels.length > 0 && level === top))) {
       throw new HttpError(400, `\`level\` must be one of the curriculum's levels (${content.levels.map((l) => l.id).join(", ")}) or ${top}, one past the last`);
     }
-    const loaded = loadProgress(profile, now);
-    // Credit only the tracks the check stood for: the core and the
-    // instruments this learner follows.
-    const tracks = placementTracks(content, loaded.progress);
-    const placed = applyPlacement(loaded.progress, level, content.concepts.filter((c) => tracks.has(c.track)), now);
-    const progress = canRemember(content) ? rememberOpened(content, placed) : placed;
-    saveProgress(profile, progress);
-    return reply(res, { ...loaded, progress });
+    const out = await withProgress(ctx, now, async (loaded) => {
+      // Credit only the tracks the check stood for: the core and the
+      // instruments this learner follows.
+      const tracks = placementTracks(content, loaded.progress);
+      const placed = applyPlacement(loaded.progress, level, content.concepts.filter((c) => tracks.has(c.track)), now);
+      const progress = canRemember(content) ? rememberOpened(content, placed) : placed;
+      return { save: progress, reply: replyOf(loaded, progress) };
+    });
+    return sendJson(res, 200, out);
   }
 
-  // reset: keep what was there under another name, then start again.
-  const file = progressPath(profile);
-  if (fs.existsSync(file)) fs.renameSync(file, path.join(profileDir(profile), `progress.reset-${stamp(now)}.json`));
-  const progress = emptyProgress(profile, now);
-  saveProgress(profile, progress);
-  reply(res, { progress, recovered: false });
+  // reset: keep what was there in progress_backups, then start again.
+  const out = await withProgress(ctx, now, async (loaded, tx) => {
+    await forLearner(tx, ctx.learner.id).insert(progressBackups, { reason: "reset", data: loaded.progress });
+    const progress = emptyProgress(ctx.learner.id, now);
+    return { save: progress, reply: { progress, recovered: false } satisfies ProgressReply };
+  });
+  sendJson(res, 200, out);
 }

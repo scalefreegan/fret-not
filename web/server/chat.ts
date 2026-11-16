@@ -1,3 +1,4 @@
+import os from "node:os";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { AGENT_MODELS, failureHint, onFatalSignal, startClaude, sweepPromptDirs } from "../../scripts/claude.mjs";
 import type { Content, ContentProblem } from "../shared/content.ts";
@@ -6,11 +7,12 @@ import type {
   SettingsReply, SettingsRequest, TutorContext,
 } from "../shared/wire.ts";
 import { REPO_ROOT, contentDir, loadContent } from "./loader.ts";
-import { HttpError, methodNotAllowed, openSse, readJsonBody, sendJson, subPath } from "./sse.ts";
-import { appendHistory, clearHistory, getListenMode, getModel, getTtsModelId, getTtsVoiceId, readHistory, setListenMode, setModel, setTtsModelId, setTtsVoiceId } from "./store.ts";
+import { HttpError, INTERNAL_ERROR, methodNotAllowed, openSse, readJsonBody, sendJson, subPath } from "./sse.ts";
+import type { LearnerCtx } from "./auth.ts";
+import { appendHistory, clearHistory, getListenSettings, getModel, readHistory, setListenSettings, setModel, type ListenSettings } from "./store.ts";
 import { ELEVEN_MODELS } from "./tts-models.ts";
 import { isConfigured as ttsConfigured } from "./tts.ts";
-import { applyCommit, changedPaths, closeWorkspace, commitWorkspace, foundHeldNote, gitRoot, heldNote, heldRefs, openWorkspace, readOnlyNote, strayWrites, sweepWorkspaces, writable, type NotReady, type Workspace } from "./turn.ts";
+import { applyCommit, changedPaths, closeWorkspace, commitWorkspace, foundHeldNote, gitRoot, heldNote, heldRefs, openReadOnlyWorkspace, openWorkspace, readOnlyNote, strayWrites, sweepWorkspaces, writable, type NotReady, type Workspace } from "./turn.ts";
 
 // The Tutor: a headless `claude -p` (scripts/claude.mjs), one turn per request.
 //
@@ -19,8 +21,12 @@ import { applyCommit, changedPaths, closeWorkspace, commitWorkspace, foundHeldNo
 //                               (or error, done); 409 while a run is in progress
 //   GET    /api/chat/history    {messages} (the newest HISTORY_REPLY_MAX)
 //   DELETE /api/chat/history    {ok}
-//   GET    /api/settings        {model, models}
-//   PUT    /api/settings        {model} → {model, models}
+//   GET    /api/settings        {model, models, listenMode, ttsVoiceId, ttsModelId, …}
+//   PUT    /api/settings        {model?, listenMode?, ttsVoiceId?, ttsModelId?} → the same
+//
+// Every route acts for the page's learner (wrap's `learner: true`): the chat
+// history is the learner's own, as are the Listen settings. The tutor's
+// model is the account's, and only an admin may change it.
 //
 // The reply only exists once the run ends, so there is nothing to show until
 // then: the heartbeats are what keep the connection (and the UI's elapsed
@@ -45,6 +51,9 @@ import { applyCommit, changedPaths, closeWorkspace, commitWorkspace, foundHeldNo
 //   - anything else (uncommitted work in content/, a detached HEAD, no
 //     commits, a rebase in progress…) → the turn runs in the repository with
 //     Read/Glob/Grep only, and a note says why it cannot write.
+//   - the account is not an admin → the same read-only turn, whatever the
+//     state of the repository: the curriculum is shared by every account,
+//     so only an admin's tutor may change it (docs/DATA.md §Auth).
 
 const HEARTBEAT_MS = 4000;
 /** Messages replayed into the prompt: ~20 exchanges… */
@@ -74,7 +83,10 @@ export function historyWindow(messages: ChatMessage[], maxMessages = HISTORY_WIN
 
 /** Built per request from the curriculum on disk, so the tutor sees the
  *  lessons and concepts as they are now — including what it added last turn. */
-export function systemPrompt(c: Content, repoRoot: string = REPO_ROOT): string {
+/** `repoRoot` null: the turn has no copy of the repository to look in (no
+ *  file tools), so no path is named. */
+export function systemPrompt(c: Content, repoRoot: string | null = REPO_ROOT): string {
+  const where = repoRoot ? ` (${repoRoot})` : "";
   const tracks = c.tracks.map((t) => `  - ${t.id} — "${t.title}"`).join("\n");
   const levels = c.levels
     .map((l) => {
@@ -93,7 +105,7 @@ You have two jobs.
 
 1. TUTOR. The learner is an adult beginner with no music background, and curious. Answer what they asked about what they are looking at: patiently, in plain words, defining every term the first time you use it, never talking down. Be exactly right — frequencies, ratios, note names and spellings, string and fret positions, counts of beats. If you are not sure of a fact, say so rather than guess; prefer saying less to saying something loose. Tie the answer to what is on their screen (each message tells you the page, and on a lesson page the lesson file — Read it before answering about it, and Read the lesson's widgets and exercises rather than assuming). When their recent answers are listed, use them: a wrong answer shows what to explain. Pitches are sounding pitches (C4 is middle C). Keep answers short: a few sentences or a short list, not an essay. You cannot play sound, draw, or grade anything; the app generates and grades every exercise itself, so never tell the learner whether an answer they describe "would be marked" right — explain the music instead.
 
-2. LESSON AUTHOR. When the learner asks for more material — another lesson, more practice questions, a different explanation written into a lesson — you write it into the curriculum. The curriculum is the product. It lives under content/ in this repository (${repoRoot}): content/curriculum.yaml (tracks, levels, concepts), content/instruments/*.yaml, and content/lessons/<track>/*.md (markdown with YAML frontmatter, widgets as fenced \`\`\`widget blocks, exercises declared in the frontmatter).
+2. LESSON AUTHOR. When the learner asks for more material — another lesson, more practice questions, a different explanation written into a lesson — you write it into the curriculum. The curriculum is the product. It lives under content/ in this repository${where}: content/curriculum.yaml (tracks, levels, concepts), content/instruments/*.yaml, and content/lessons/<track>/*.md (markdown with YAML frontmatter, widgets as fenced \`\`\`widget blocks, exercises declared in the frontmatter).
    - Before you create or edit ANY content file, Read docs/CONTENT.md (the file format and the rules for writing lessons that work) and docs/CONTENT-REFERENCE.md (every widget and exercise kind with its parameters). The loader refuses a lesson whole if anything in it breaks the format.
    - Use only widgets, exercise kinds and parameters listed in docs/CONTENT-REFERENCE.md. You cannot add new ones; if something needs one, say so instead of inventing it.
    - A lesson may only name concepts that exist. To teach a new concept, add it to content/curriculum.yaml FIRST (id lowercase-with-dashes, title, level, track, requires), then write the lesson.
@@ -114,7 +126,7 @@ Rules:
 - You may create or edit files only under content/. Your tools are already restricted to that: do not try to write anywhere else, run commands, or touch web/, scripts/, docs/, data/ or anything else outside content/. If the learner asks for that (a new widget, a bug fix, a change to how the app works), say you can't and that it is a change to the app itself.
 - Do not edit content unless the learner asked for something that needs it. A question gets an answer, not a rewrite of the lesson.
 - Do not run git; the app commits the files you changed after each turn, so every change can be undone.
-- You are working in a private copy of the repository (${repoRoot}). It is merged into the learner's own files only after it passes the checks. When you mention a file to the learner, give its path inside the repository (content/lessons/…), never the absolute path of your copy.
+- You are working in a private copy of the repository${where}. It is merged into the learner's own files only after it passes the checks. When you mention a file to the learner, give its path inside the repository (content/lessons/…), never the absolute path of your copy.
 - Reply in plain prose, no headings. If — and only if — you created or edited files this turn, end your reply with ONE final line starting "Changed:" that says what, e.g. "Changed: added lesson core-3-blues-scale (level 3)." or "Changed: four more quiz questions in core-0-octave." Say in a sentence where the learner will find it. If you changed nothing, do not add that line.`;
 }
 
@@ -293,7 +305,25 @@ export function readOnlyBrief(why: NotReady): string {
   return `\n\nTHIS TURN IS READ-ONLY. You have no Write or Edit tool this time, because ${why.reason}. Answer questions as usual. If the learner asked for something that needs you to write (a new lesson, more questions, a rewrite), do not attempt it and do not paste the lesson into the chat: say in one or two sentences that you cannot write right now and why, and that this will fix it: ${why.fix} Do not add a "Changed:" line.`;
 }
 
+/** For a read-only turn that could not be given a clean copy to read. */
+export const NO_FILES_BRIEF = `\n\nTHIS TURN HAS NO FILE TOOLS: the app could not open a copy of the lessons for you to read, so you cannot Read any file, including the lesson the learner has open. Answer from the curriculum outline above, the page and recent answers in the message, and what you know, and say so if the question needs the lesson's own text.`;
+
+/** Told to the learner (once in a while) when that happens. */
+export const NO_FILES_NOTE = "The tutor could not open a copy of the lessons this time, so it answers without reading them. Tell the app's owner if this keeps happening (the server log says why).";
+
 /* -------------------------------- the run -------------------------------- */
+
+/** A turn that stopped for a reason the learner may read: the agent run
+ *  failed, timed out or was stopped (startClaude's own sentences). Anything
+ *  else that breaks a turn (a database error, a bug) is logged and shown as
+ *  INTERNAL_ERROR, never as its raw message. */
+export class TurnStopped extends Error {}
+
+/** What the learner is told when a commit landed but recording it in the
+ *  chat failed: the change is in, so the page must still reload it. */
+export function unrecordedCommitNote(hash: string, summary: string): string {
+  return `The tutor's change was committed (${hash}: ${summary}) and is in your curriculum, but the chat could not record it (${INTERNAL_ERROR}).`;
+}
 
 // One tutor turn at a time: the learner has one chat, and two turns would
 // only race to fast-forward the same branch. The state lives on globalThis
@@ -308,6 +338,8 @@ interface TutorState {
   phase: "idle" | "agent" | "settling";
   /** The worktree of the turn in flight, for the shutdown hook. */
   workspace: Pick<Workspace, "dir" | "root"> | null;
+  /** The learner whose turn is in flight. */
+  learnerId?: string | null;
   hooked: boolean;
 }
 const tutor = ((globalThis as { __fretNotTutor?: TutorState }).__fretNotTutor ??= { running: false, phase: "idle", workspace: null, hooked: false });
@@ -349,7 +381,15 @@ export function recoverInterruptedTurn(maxAgeMs?: number): { removed: number } {
   return { removed: sweepWorkspaces(maxAgeMs === undefined ? { keep } : { maxAgeMs, keep }) };
 }
 
-async function handleChatPost(req: IncomingMessage, res: ServerResponse): Promise<void> {
+/** Why a non-admin's turn is read-only. */
+export const NOT_ADMIN: NotReady = {
+  ok: false,
+  reason: "only an admin's tutor may change the lessons, which every learner shares",
+  fix: "Ask an admin to make the change (an admin account is made with `npm run user -- admin <name>`).",
+};
+
+async function handleChatPost(req: IncomingMessage, res: ServerResponse, actor: LearnerCtx): Promise<void> {
+  const learnerId = actor.learner.id;
   // Cancellation is listened for from the first moment — before the body is
   // read, the repository checked or the worktree made — so a Stop pressed in
   // the first second is not missed. It listens on `res`, not `req`:
@@ -372,10 +412,15 @@ async function handleChatPost(req: IncomingMessage, res: ServerResponse): Promis
   tutor.running = true;
   tutor.phase = "idle";
   tutor.workspace = null;
+  tutor.learnerId = learnerId;
 
   const now = () => new Date().toISOString();
   let heartbeat: ReturnType<typeof setInterval> | null = null;
   let ws: Workspace | null = null;
+  /** The commit this turn put into the owner's branch, once it has. */
+  let applied: { hash: string; summary: string } | null = null;
+  /** A non-admin's clean, read-only copy of HEAD (never committed from). */
+  let lookWs: Workspace | null = null;
   // Everything from here on is inside the try, so nothing — not even opening
   // the stream — can leave `running` set with no turn behind it.
   try {
@@ -384,9 +429,10 @@ async function handleChatPost(req: IncomingMessage, res: ServerResponse): Promis
     sweepWorkspaces({ root });
     sweepPromptDirs();
 
-    // May this turn write? If so it gets a worktree of its own; if not (or
-    // the worktree cannot be made) it runs read-only, and says why.
-    const ready = await writable(root, dir);
+    // May this turn write? Only an admin's, and only when the repository
+    // allows it; if so it gets a worktree of its own; if not (or the
+    // worktree cannot be made) it runs read-only, and says why.
+    const ready = actor.user.isAdmin ? await writable(root, dir) : NOT_ADMIN;
     let readOnly: NotReady | null = ready.ok ? null : ready;
     if (ready.ok) {
       try {
@@ -397,60 +443,82 @@ async function handleChatPost(req: IncomingMessage, res: ServerResponse): Promis
         readOnly = { ok: false, reason: "the app could not set up a separate working copy for it", fix: "Check `git worktree list` in a terminal and the app's log, then ask again." };
       }
     }
+    // A non-admin's turn never looks at the owner's working tree (it holds
+    // .env.local and data/): it reads a clean checkout of HEAD, or, when one
+    // cannot be made, gets no file tools at all.
+    let noFiles = false;
+    if (!actor.user.isAdmin) {
+      try {
+        lookWs = await openReadOnlyWorkspace(root, dir);
+        tutor.workspace = lookWs;
+      } catch (e) {
+        console.error(`[fret-not] tutor: no clean copy for a read-only turn, so it runs without file tools: ${String((e as Error)?.message || e)}`);
+        noFiles = true;
+      }
+    }
+    const lookDir = ws ? ws.dir : lookWs ? lookWs.dir : root;
 
     const send = openSse(res);
     const startedAt = Date.now();
     heartbeat = setInterval(() => {
       send("heartbeat", { elapsed: Math.round((Date.now() - startedAt) / 1000) } satisfies ChatHeartbeat);
     }, HEARTBEAT_MS);
-    const tell = (text: string) => {
+    const tell = async (text: string) => {
       const note: ChatMessage = { role: "note", text, ts: now() };
-      appendHistory(note);
+      await appendHistory(learnerId, note);
       send("note", { text: note.text, ts: note.ts } satisfies ChatNote);
     };
 
     // Headers are out: an exception from here can only be reported as an SSE
     // error, never as a status.
     try {
-      const history = readHistory();
+      const history = await readHistory(learnerId);
       const prior = historyWindow(history);
-      const model = getModel();
+      const model = await getModel(actor.user.id);
       // What the turn starts from: the worktree's content/ (the last commit)
       // when it may write, the working tree's when it may only read.
-      const before = loadContent(ws ? ws.content : dir);
-      const system = systemPrompt(before, ws ? ws.dir : root) + (readOnly ? readOnlyBrief(readOnly) : "");
+      const before = loadContent(ws ? ws.content : lookWs ? lookWs.content : dir);
+      const system = systemPrompt(before, noFiles ? null : lookDir) + (readOnly ? readOnlyBrief(readOnly) : "") + (noFiles ? NO_FILES_BRIEF : "");
       armShutdownCleanup();
       const userLine: ChatMessage = { role: "user", text: message, ts: now() };
-      appendHistory(userLine);
+      await appendHistory(learnerId, userLine);
       send("start", { model } satisfies ChatStart);
       if (readOnly) {
         // Said once, not after every question: skipped while the same note
         // is still among the last few messages.
         const text = readOnlyNote(readOnly);
-        if (!history.slice(-READ_ONLY_NOTE_EVERY).some((m) => m.role === "note" && m.text === text)) tell(text);
+        if (!history.slice(-READ_ONLY_NOTE_EVERY).some((m) => m.role === "note" && m.text === text)) await tell(text);
       }
+      if (noFiles && !history.slice(-READ_ONLY_NOTE_EVERY).some((m) => m.role === "note" && m.text === NO_FILES_NOTE)) await tell(NO_FILES_NOTE);
       // A tutor commit an earlier server kept under a name (or applied) but
       // stopped before recording: said now, once, so no kept commit is ever
-      // one the owner was not told about.
-      const spec = ready.ok ? ready.spec : "content";
-      const found = await heldRefs(root, spec);
-      const said = (h: { ref: string; hash: string }) => history.some((m) => (m.role === "note" && m.text.includes(h.ref)) || (m.role === "commit" && m.text.startsWith(h.hash.slice(0, 7))));
-      for (const h of found.landed) if (!said(h)) appendHistory({ role: "commit", text: `${h.hash.slice(0, 7)}: ${h.summary}`, ts: now() });
-      for (const h of found.held) if (!said(h)) tell(foundHeldNote(h, spec));
+      // one the owner was not told about. An admin's business: only an
+      // admin's tutor ever makes one.
+      if (actor.user.isAdmin) {
+        const spec = ready.ok ? ready.spec : "content";
+        const found = await heldRefs(root, spec);
+        const said = (h: { ref: string; hash: string }) => history.some((m) => (m.role === "note" && m.text.includes(h.ref)) || (m.role === "commit" && m.text.startsWith(h.hash.slice(0, 7))));
+        for (const h of found.landed) if (!said(h)) await appendHistory(learnerId, { role: "commit", text: `${h.hash.slice(0, 7)}: ${h.summary}`, ts: now() });
+        for (const h of found.held) if (!said(h)) await tell(foundHeldNote(h, spec));
+      }
 
       const turn = async (prompt: string): Promise<ChatMessage> => {
         // Stopped before the agent was even started: do not start it.
-        if (gone()) throw new Error("cancelled");
+        if (gone()) throw new TurnStopped("cancelled");
         tutor.phase = "agent";
         const { result } = startClaude(
           ws
             ? { prompt, systemPrompt: system, model, cwd: ws.dir, signal: ctrl.signal, contentDir: ws.content, repoRoot: ws.dir }
-            : { prompt, systemPrompt: system, model, cwd: root, signal: ctrl.signal, tools: "read" },
+            : noFiles
+              ? { prompt, systemPrompt: system, model, cwd: os.tmpdir(), signal: ctrl.signal, tools: "none" }
+              : { prompt, systemPrompt: system, model, cwd: lookDir, signal: ctrl.signal, tools: "read", repoRoot: lookDir },
         );
-        const run = await result;
+        const run = await result.catch((e: unknown) => {
+          throw new TurnStopped(String((e as Error)?.message || e));
+        });
         tutor.phase = "settling";
         const reply: ChatMessage = { role: "assistant", text: run.text.trim(), ts: now() };
-        appendHistory(reply);
+        await appendHistory(learnerId, reply);
         send("message", { ...reply, role: "assistant", costUsd: run.costUsd, numTurns: run.numTurns, denied: run.permissionDenials.length } satisfies ChatReply);
         if (run.permissionDenials.length) console.warn(`[fret-not] tutor: ${run.permissionDenials.length} tool call(s) denied by the sandbox`, run.permissionDenials);
         return reply;
@@ -473,28 +541,29 @@ async function handleChatPost(req: IncomingMessage, res: ServerResponse): Promis
         }
         // Stop pressed (or the page gone) after the agent's last call but
         // before the commit is still a stop: nothing is committed.
-        if (gone()) throw new Error("cancelled");
+        if (gone()) throw new TurnStopped("cancelled");
 
         if (broken.length) {
           const note: ChatMessage = { role: "note", text: remainingNote(broken), ts: now() };
-          appendHistory(note);
+          await appendHistory(learnerId, note);
           send("problems", { problems: broken, text: note.text, ts: note.ts } satisfies ChatProblems);
         } else {
           const made = await commitWorkspace(ws, reply.text);
           if ("error" in made) {
             console.error(`[fret-not] tutor: commit failed: ${made.error}`);
-            tell(`The tutor's change passed the checks but could not be committed (${made.error}), so it was thrown away. It was written in a separate copy: your curriculum was not touched. Ask again once that is sorted out.`);
+            await tell(`The tutor's change passed the checks but could not be committed (${made.error}), so it was thrown away. It was written in a separate copy: your curriculum was not touched. Ask again once that is sorted out.`);
             commit = { error: made.error };
           } else if ("hash" in made) {
             // Asked again inside, immediately before the files are written.
             const landed = await applyCommit(ws, made.hash, { cancelled: gone });
-            if (!landed.applied && landed.cancelled) throw new Error("cancelled");
+            if (!landed.applied && landed.cancelled) throw new TurnStopped("cancelled");
             if (landed.applied) {
               commit = { hash: made.hash.slice(0, 7), summary: made.summary };
-              appendHistory({ role: "commit", text: `${commit.hash}: ${commit.summary}`, ts: now() });
+              applied = commit;
+              await appendHistory(learnerId, { role: "commit", text: `${commit.hash}: ${commit.summary}`, ts: now() });
             } else if (!landed.cancelled) {
               console.warn(`[fret-not] tutor: commit ${made.hash} kept as ${landed.ref}, not applied: ${landed.reason}`);
-              tell(heldNote(ws, made.hash, made.summary, landed));
+              await tell(heldNote(ws, made.hash, made.summary, landed));
             }
           }
         }
@@ -502,7 +571,19 @@ async function handleChatPost(req: IncomingMessage, res: ServerResponse): Promis
       send("commit", commit);
       send("done", { ok: true } satisfies ChatDone);
     } catch (e) {
-      const msg = String((e as Error)?.message || e);
+      if (applied) {
+        // The change is in the owner's branch; only the record of it (or
+        // something after it) failed. Say so, and still send the commit so
+        // the page reloads the curriculum.
+        console.error("[fret-not] tutor: a turn failed after its commit landed:", e);
+        send("error", { error: unrecordedCommitNote(applied.hash, applied.summary) } satisfies ChatError);
+        send("commit", applied);
+        send("done", { ok: false } satisfies ChatDone);
+        return;
+      }
+      const known = e instanceof TurnStopped || e instanceof HttpError;
+      if (!known) console.error("[fret-not] tutor: a turn failed:", e);
+      const msg = known ? String((e as Error).message) : INTERNAL_ERROR;
       const reason = failureHint(msg) || msg;
       // The run died, timed out or was stopped (startClaude rejects only once
       // the process group is gone, so nothing is still writing). There is
@@ -519,7 +600,7 @@ async function handleChatPost(req: IncomingMessage, res: ServerResponse): Promis
         }
         text = interruptedNote(reason, wrote);
         try {
-          appendHistory({ role: "note", text, ts: now() });
+          await appendHistory(learnerId, { role: "note", text, ts: now() });
         } catch (storeError) {
           console.error(`[fret-not] tutor: could not record an interrupted turn: ${String((storeError as Error)?.message || storeError)}`);
         }
@@ -531,8 +612,10 @@ async function handleChatPost(req: IncomingMessage, res: ServerResponse): Promis
     // Committed and applied, kept under a ref, or thrown away: in every case
     // the worktree has done its job.
     if (ws) closeWorkspace(ws);
+    if (lookWs) closeWorkspace(lookWs);
     tutor.workspace = null;
     tutor.running = false;
+    tutor.learnerId = null;
     tutor.phase = "idle";
     if (heartbeat) clearInterval(heartbeat);
     res.off("close", onClose);
@@ -546,17 +629,17 @@ const READ_ONLY_NOTE_EVERY = 12;
 
 /* -------------------------------- routes --------------------------------- */
 
-export async function handleChat(req: IncomingMessage, res: ServerResponse): Promise<void> {
+export async function handleChat(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx): Promise<void> {
   const seg = subPath(req);
   if (!seg) {
     if (req.method !== "POST") return methodNotAllowed(res, "POST");
-    return handleChatPost(req, res);
+    return handleChatPost(req, res, ctx);
   }
   if (seg === "history") {
-    if (req.method === "GET") return sendJson(res, 200, { messages: readHistory().slice(-HISTORY_REPLY_MAX) } satisfies ChatHistoryReply);
+    if (req.method === "GET") return sendJson(res, 200, { messages: await readHistory(ctx.learner.id, HISTORY_REPLY_MAX) } satisfies ChatHistoryReply);
     if (req.method === "DELETE") {
-      if (tutor.running) throw new HttpError(409, "the tutor is working; clear the history when it finishes");
-      clearHistory();
+      if (tutor.running && tutor.learnerId === ctx.learner.id) throw new HttpError(409, "the tutor is working; clear the history when it finishes");
+      await clearHistory(ctx.learner.id);
       return sendJson(res, 200, { ok: true });
     }
     return methodNotAllowed(res, "GET, DELETE");
@@ -564,41 +647,46 @@ export async function handleChat(req: IncomingMessage, res: ServerResponse): Pro
   sendJson(res, 404, { error: "no such route" });
 }
 
-export async function handleSettings(req: IncomingMessage, res: ServerResponse): Promise<void> {
+export async function handleSettings(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx): Promise<void> {
   if (subPath(req)) return sendJson(res, 404, { error: "no such route" });
-  const reply = (): SettingsReply => ({
-    model: getModel(),
+  const ref = { userId: ctx.user.id, learnerId: ctx.learner.id };
+  const reply = async (): Promise<SettingsReply> => ({
+    model: await getModel(ctx.user.id),
     models: AGENT_MODELS,
-    listenMode: getListenMode(),
-    ttsVoiceId: getTtsVoiceId(),
-    ttsModelId: getTtsModelId(),
+    ...(await getListenSettings(ref)),
     ttsModels: ELEVEN_MODELS,
     ttsConfigured: ttsConfigured(),
+    canWrite: ctx.user.isAdmin,
   });
-  if (req.method === "GET") return sendJson(res, 200, reply());
+  if (req.method === "GET") return sendJson(res, 200, await reply());
   if (req.method === "PUT") {
     const body = await readJsonBody<Partial<SettingsRequest>>(req);
+    // Everything is checked before anything is written: a refused field
+    // leaves the others as they were.
     if (body.model !== undefined) {
+      if (!ctx.user.isAdmin) throw new HttpError(403, "only an admin can change the tutor's model");
       if (typeof body.model !== "string" || !AGENT_MODELS.some((m) => m.id === body.model)) {
         throw new HttpError(400, `model must be one of ${AGENT_MODELS.map((m) => m.id).join(", ")}`);
       }
-      setModel(body.model);
     }
+    const listen: Partial<ListenSettings> = {};
     if (body.listenMode !== undefined) {
       if (typeof body.listenMode !== "boolean") throw new HttpError(400, "listenMode must be a boolean");
-      setListenMode(body.listenMode);
+      listen.listenMode = body.listenMode;
     }
     if (body.ttsVoiceId !== undefined) {
-      if (body.ttsVoiceId !== null && typeof body.ttsVoiceId !== "string") throw new HttpError(400, "ttsVoiceId must be a string or null");
-      setTtsVoiceId(body.ttsVoiceId);
+      if (body.ttsVoiceId !== null && (typeof body.ttsVoiceId !== "string" || body.ttsVoiceId.length > 200)) throw new HttpError(400, "ttsVoiceId must be a string or null");
+      listen.ttsVoiceId = body.ttsVoiceId;
     }
     if (body.ttsModelId !== undefined) {
       if (typeof body.ttsModelId !== "string" || !ELEVEN_MODELS.some((m) => m.id === body.ttsModelId)) {
         throw new HttpError(400, `ttsModelId must be one of ${ELEVEN_MODELS.map((m) => m.id).join(", ")}`);
       }
-      setTtsModelId(body.ttsModelId);
+      listen.ttsModelId = body.ttsModelId;
     }
-    return sendJson(res, 200, reply());
+    if (body.model !== undefined) await setModel(ctx.user.id, body.model);
+    await setListenSettings(ref, listen);
+    return sendJson(res, 200, await reply());
   }
   methodNotAllowed(res, "GET, PUT");
 }

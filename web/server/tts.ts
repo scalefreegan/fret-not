@@ -4,8 +4,10 @@ import path from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { wordsFromAlignment, type CharAlignment, type SpokenWord } from "../shared/tts/alignment.ts";
 import type { TtsSpeakReply, TtsVoice, TtsVoicesReply } from "../shared/wire.ts";
+import { envFile as sharedEnvFile, parseEnv } from "../../scripts/env.mjs";
+import type { LearnerCtx } from "./auth.ts";
 import { REPO_ROOT } from "./loader.ts";
-import { dataDir, getTtsModelId, getTtsVoiceId } from "./store.ts";
+import { dataDir, getListenSettings, type LearnerRef } from "./store.ts";
 import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./sse.ts";
 
 // ElevenLabs text-to-speech for "Listen mode": a learner who isn't reading
@@ -25,30 +27,11 @@ import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./
 /** FRET_ENV_FILE when set (resolved against the repo root), else
  *  <repo>/.env.local — gitignored by both `.env.*` and `*.local` already in
  *  .gitignore. A file rather than the shell environment because the Dock
- *  app starts the server without the user's shell profile (same reasoning
- *  as Lingo Dojo's envFile()). */
-export function envFile(): string {
-  const override = process.env.FRET_ENV_FILE;
-  return override ? path.resolve(REPO_ROOT, override) : path.join(REPO_ROOT, ".env.local");
-}
-
-/** KEY=VALUE lines; `#` comments, blank lines, an `export ` prefix and one
- *  layer of matching quotes are tolerated. Nothing is interpolated. */
-export function parseEnv(text: string): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const raw of text.split(/\r?\n/)) {
-    const line = raw.trim();
-    if (!line || line.startsWith("#")) continue;
-    const m = line.match(/^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/);
-    if (!m) continue;
-    let value = m[2].trim();
-    const q = value[0];
-    if ((q === '"' || q === "'") && value.endsWith(q) && value.length >= 2) value = value.slice(1, -1);
-    else value = value.replace(/\s+#.*$/, "");
-    out[m[1]] = value;
-  }
-  return out;
-}
+ *  app starts the server without the user's shell profile. The same file
+ *  holds DATABASE_URL (scripts/db/config.mjs); both read it through
+ *  scripts/env.mjs. */
+export const envFile = (): string => sharedEnvFile(REPO_ROOT);
+export { parseEnv };
 
 /** The ElevenLabs API key: the process environment wins, else the env file.
  *  Read per call (no restart to pick up a new key), like every other file
@@ -139,10 +122,10 @@ function requireKey(): string {
   return key;
 }
 
-async function speak(text: string): Promise<TtsSpeakReply> {
-  const voiceId = getTtsVoiceId();
+/** Speak `text` in the learner's own voice and model. */
+async function speak(text: string, ref: LearnerRef): Promise<TtsSpeakReply> {
+  const { ttsVoiceId: voiceId, ttsModelId: modelId } = await getListenSettings(ref);
   if (!voiceId) throw new HttpError(400, "Choose a voice before using Listen mode.");
-  const modelId = getTtsModelId();
   const key = requireKey();
   const hash = cacheKey(text, voiceId, modelId);
   const cached = readCache(hash);
@@ -171,21 +154,32 @@ async function voices(): Promise<TtsVoicesReply> {
   return { voices: list };
 }
 
-const AUDIO_RE = /^audio\/([0-9a-f]{64})\.mp3$/;
+const AUDIO_RE = /^([0-9a-f]{64})\.mp3$/;
 
-export async function handleTts(req: IncomingMessage, res: ServerResponse): Promise<void> {
+/** GET /api/tts/audio/<hash>.mp3: a cached clip. Mounted on its own route
+ *  (api.ts) because an audio element cannot send the learner header; the
+ *  clips are content-addressed and the same for every learner. */
+export async function handleTtsAudio(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const audioMatch = AUDIO_RE.exec(subPath(req));
+  if (!audioMatch) return sendJson(res, 404, { error: "no such route" });
+  if (req.method !== "GET") return methodNotAllowed(res, "GET");
+  const { audio } = cachePaths(audioMatch[1]);
+  if (!fs.existsSync(audio)) return sendJson(res, 404, { error: "no such cached audio" });
+  // Content-addressed by a hash of (text, voice, model): the same key can
+  // never mean different bytes, so this is safe to cache for a long time,
+  // unlike Lingo Dojo's fresh-every-time voice.ts response. Private: it
+  // needs a login.
+  res.writeHead(200, { "Content-Type": "audio/mpeg", "Cache-Control": "private, max-age=31536000, immutable" });
+  fs.createReadStream(audio).pipe(res);
+}
+
+/** /api/tts/voices and /api/tts/speak (and, when mounted alone as in the
+ *  tests, /api/tts/audio/…). */
+export async function handleTts(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx): Promise<void> {
   const seg = subPath(req);
-  const audioMatch = AUDIO_RE.exec(seg);
-  if (audioMatch) {
-    if (req.method !== "GET") return methodNotAllowed(res, "GET");
-    const { audio } = cachePaths(audioMatch[1]);
-    if (!fs.existsSync(audio)) return sendJson(res, 404, { error: "no such cached audio" });
-    // Content-addressed by a hash of (text, voice, model): the same key can
-    // never mean different bytes, so this is safe to cache for a long time,
-    // unlike Lingo Dojo's fresh-every-time voice.ts response.
-    res.writeHead(200, { "Content-Type": "audio/mpeg", "Cache-Control": "public, max-age=31536000, immutable" });
-    fs.createReadStream(audio).pipe(res);
-    return;
+  if (seg.startsWith("audio/")) {
+    req.url = `/${seg.slice("audio/".length)}`;
+    return handleTtsAudio(req, res);
   }
   if (seg === "voices") {
     if (req.method !== "GET") return methodNotAllowed(res, "GET");
@@ -195,7 +189,7 @@ export async function handleTts(req: IncomingMessage, res: ServerResponse): Prom
     if (req.method !== "POST") return methodNotAllowed(res, "POST");
     const body = await readJsonBody<{ text?: unknown }>(req);
     if (typeof body?.text !== "string" || !body.text.trim()) throw new HttpError(400, "text must be a non-empty string");
-    return sendJson(res, 200, await speak(body.text));
+    return sendJson(res, 200, await speak(body.text, { userId: ctx.user.id, learnerId: ctx.learner.id }));
   }
   sendJson(res, 404, { error: "no such route" });
 }

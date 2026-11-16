@@ -1,16 +1,22 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { AppDataContext, type AppData, type Saver, type SaveResult } from "./app-data.ts";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { ANSWERS_LOST_EVENT, AppDataContext, type AppData, type LostAnswers, type Saver, type SaveResult } from "./app-data.ts";
 import type { Content } from "../shared/content.ts";
+import { AnswerQueue, type QueueState } from "../shared/answer-queue.ts";
 import { emptyProgress, type AnswerResult, type Progress } from "../shared/progress.ts";
+import { apiFetch } from "./api/client.ts";
 import { getProgress, postAnswers, postPlacement, resetProgress } from "./api/progress.ts";
 
 // The two things every page needs: the curriculum (re-read from disk by the
-// server on every request) and the learner's progress. This file holds only
-// the provider; the types and the hooks that read it are in app-data.ts.
+// server on every request) and the progress of the learner this app shows.
+// Every call names `learnerId`, this provider's own learner: the auth gate
+// remounts the app when the learner changes, and a request still in flight
+// from before then goes out as the learner it was made for (the server
+// refuses it as stale) rather than as whoever is shown now. This file holds
+// only the provider; the types and the hooks that read it are in app-data.ts.
 
-export function AppDataProvider({ children }: { children: ReactNode }) {
+export function AppDataProvider({ learnerId, children }: { learnerId: string; children: ReactNode }) {
   const [content, setContent] = useState<Content | null>(null);
-  const [progress, setProgress] = useState<Progress>(() => emptyProgress("default", new Date()));
+  const [progress, setProgress] = useState<Progress>(() => emptyProgress(learnerId, new Date()));
   const [error, setError] = useState<string | null>(null);
   const [recovered, setRecoveredFlag] = useState(false);
   const [recoveredTo, setRecoveredTo] = useState<string | null>(null);
@@ -22,30 +28,30 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
 
   const reloadContent = useCallback(async () => {
     try {
-      const res = await fetch("/api/content");
+      const res = await apiFetch("/api/content", {}, learnerId);
       if (!res.ok) throw new Error(`could not load the curriculum (${res.status})`);
       setContent((await res.json()) as Content);
       setError(null);
     } catch (e) {
       setError((e as Error).message);
     }
-  }, []);
+  }, [learnerId]);
 
   useEffect(() => {
     void reloadContent();
-    getProgress()
+    getProgress(learnerId)
       .then((r) => {
         setProgress(r.progress);
         setProgressLoaded(true);
         if (r.recovered) setRecovered(true, r.recoveredTo);
       })
       .catch((e: Error) => setError(e.message));
-  }, [reloadContent, setRecovered]);
+  }, [learnerId, reloadContent, setRecovered]);
 
   const record = useCallback(
     async (results: AnswerResult[], lesson?: { id: string; score: number }): Promise<SaveResult> => {
       try {
-        const reply = await postAnswers(results, lesson);
+        const reply = await postAnswers(learnerId, results, lesson);
         setProgress(reply.progress);
         setProgressLoaded(true);
         if (reply.recovered) setRecovered(true, reply.recoveredTo);
@@ -54,68 +60,26 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
         return { ok: false, error: (e as Error).message };
       }
     },
-    [setRecovered],
+    [learnerId, setRecovered],
   );
 
-  // The queue of answers on their way to the server. It lives here, above
-  // the pages, so answers that have not been saved yet survive moving to
-  // another page: every answer waits in the list until the server has taken
-  // it. A batch that finishes while a save is in flight is sent right after
-  // it, and after a failed save the answers stay and go with the next
-  // attempt (the retry button, or the next batch).
-  const waiting = useRef<AnswerResult[]>([]);
-  /** The lesson completion still to be recorded, if any (the latest wins). */
-  const lessonWaiting = useRef<{ id: string; score: number } | null>(null);
-  const running = useRef<Promise<SaveResult> | null>(null);
-  const again = useRef(false);
-  const [unsaved, setUnsaved] = useState(0);
-  const [pending, setPending] = useState(false);
-  const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "failed">("idle");
-  const [saveError, setSaveError] = useState<string | null>(null);
-  const sync = useCallback(() => {
-    setUnsaved(waiting.current.length);
-    setPending(waiting.current.length > 0 || lessonWaiting.current !== null);
-  }, []);
-  const flush = useCallback((): Promise<SaveResult> => {
-    if (running.current) {
-      // A save is in flight: it sends what it took; ask it to go round again.
-      again.current = true;
-      return running.current;
-    }
-    setSaveStatus("saving");
-    const run = (async () => {
-      let res: SaveResult;
-      let sum: SaveResult = { ok: true, dropped: 0, lessonDropped: false, recovered: false };
-      do {
-        again.current = false;
-        const sending = waiting.current;
-        const lesson = lessonWaiting.current;
-        res = await record(sending, lesson ?? undefined);
-        if (res.ok) {
-          waiting.current = waiting.current.slice(sending.length);
-          if (lessonWaiting.current === lesson) lessonWaiting.current = null;
-          sum = { ok: true, dropped: sum.dropped + res.dropped, lessonDropped: sum.lessonDropped || res.lessonDropped, recovered: sum.recovered || res.recovered };
-        }
-      } while (res.ok && (again.current || waiting.current.length > 0 || lessonWaiting.current));
-      const out = res.ok ? sum : res;
-      running.current = null;
-      sync();
-      setSaveStatus(out.ok ? "idle" : "failed");
-      setSaveError(out.ok ? null : out.error);
-      return out;
-    })();
-    running.current = run;
-    return run;
-  }, [record, sync]);
-  const addAnswers = useCallback(
-    (results: AnswerResult[], lesson?: { id: string; score: number }) => {
-      waiting.current = [...waiting.current, ...results];
-      if (lesson) lessonWaiting.current = lesson;
-      sync();
-      return flush();
-    },
-    [flush, sync],
-  );
+  // The queue of answers on their way to the server (web/shared/answer-queue.ts).
+  // It lives here, above the pages, so unsaved answers survive moving to
+  // another page; it is this learner's, and is closed when the provider goes
+  // (a learner switch), so its loop sends nothing more.
+  const [queueState, setQueueState] = useState<QueueState>({ unsaved: 0, pending: false, status: "idle", error: null });
+  const [queue] = useState(() => new AnswerQueue((results, lesson) => record(results, lesson), setQueueState));
+  useEffect(() => {
+    queue.open();
+    return () => {
+      // Whatever was still waiting is lost with the learner (a switch here
+      // or in another tab, a logout, an expired session): say so after.
+      const lost = queue.close();
+      if (lost.answers || lost.lesson) globalThis.dispatchEvent?.(new CustomEvent<LostAnswers>(ANSWERS_LOST_EVENT, { detail: lost }));
+    };
+  }, [queue]);
+  const { unsaved, pending, status: saveStatus, error: saveError } = queueState;
+
   // Closing or reloading the page while answers are still on their way (or
   // stuck after a failed save) would lose them: the browser asks first.
   const leaving = pending || saveStatus === "saving";
@@ -128,10 +92,14 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     window.addEventListener("beforeunload", on);
     return () => window.removeEventListener("beforeunload", on);
   }, [leaving]);
-  const saver = useMemo<Saver>(() => ({ add: addAnswers, retry: flush, unsaved, pending, status: saveStatus, error: saveError }), [addAnswers, flush, unsaved, pending, saveStatus, saveError]);
+  const saver = useMemo<Saver>(
+    () => ({ add: (results, lesson) => queue.add(results, lesson), retry: () => queue.flush(), unsaved, pending, status: saveStatus, error: saveError }),
+    [queue, unsaved, pending, saveStatus, saveError],
+  );
 
   const value = useMemo<AppData>(
     () => ({
+      learnerId,
       content,
       progress,
       progressLoaded,
@@ -142,18 +110,18 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
       record,
       saver,
       place: async (level) => {
-        const reply = await postPlacement(level);
+        const reply = await postPlacement(learnerId, level);
         setProgress(reply.progress);
         setProgressLoaded(true);
         if (reply.recovered) setRecovered(true, reply.recoveredTo);
       },
       reset: async () => {
-        setProgress((await resetProgress()).progress);
+        setProgress((await resetProgress(learnerId)).progress);
         setProgressLoaded(true);
         setRecovered(false);
       },
     }),
-    [content, progress, progressLoaded, error, recovered, recoveredTo, reloadContent, record, saver, setRecovered],
+    [learnerId, content, progress, progressLoaded, error, recovered, recoveredTo, reloadContent, record, saver, setRecovered],
   );
   return <AppDataContext.Provider value={value}>{children}</AppDataContext.Provider>;
 }

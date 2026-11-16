@@ -9,6 +9,19 @@
     "test": "node --test --test-timeout=60000 \"web/shared/**/*.test.ts\" \"web/server/**/*.test.ts\" \"scripts/tests/*.test.mjs\"",
     "check:content": "node scripts/check-content.ts",
     "lint": "npm --prefix web run lint",
-    "typecheck": "cd web && npx tsc -b"
+    "typecheck": "cd web && npx tsc -b",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "node scripts/db/setup.mjs --migrate-only",
+    "db:setup": "node scripts/db/setup.mjs",
+    "user": "node scripts/user.mjs"
+  },
+  "dependencies": {
+    "drizzle-orm": "^0.45.4",
+    "pg": "^8.23.1"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.5.16",
+    "@types/pg": "^8.23.1",
+    "drizzle-kit": "^0.31.11"
   }
 }

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { ProfileControl, type AccountActions } from "./account/ProfileControl.tsx";
 import type { Answered } from "./exercises/Runner.tsx";
 import { ErrorBoundary } from "./ErrorBoundary.tsx";
 import { Gallery } from "./pages/Gallery.tsx";
@@ -10,6 +11,8 @@ import { SketchpadPage } from "./pages/Sketchpad.tsx";
 import { href, useRoute } from "./router.ts";
 import { useAppData } from "./app-data.ts";
 import { ListenToggle } from "./ListenToggle.tsx";
+import { ListenTransport } from "./ListenTransport.tsx";
+import { useListen } from "./listen-data.ts";
 import { ListenProvider } from "./listen-state.tsx";
 import { AppDataProvider } from "./state.tsx";
 import { TutorDrawer, type TutorContext } from "./tutor/index.tsx";
@@ -20,7 +23,8 @@ function Logo() {
   return (
     <a href={href("home")} aria-label="Fret Not: the path" className="flex min-h-11 shrink-0 items-center gap-2.5">
       <img src="/favicon.svg" alt="" className="h-8 w-8 rounded-lg" />
-      <span className="font-display text-[1.35rem] font-bold tracking-tight text-fg">Fret Not</span>
+      {/* The wordmark gives way on a narrow phone, where Listen, the learner and the tutor need the room. */}
+      <span className="font-display text-[1.35rem] font-bold tracking-tight text-fg max-[459px]:sr-only">Fret Not</span>
     </a>
   );
 }
@@ -64,9 +68,10 @@ function LockedLesson({ title, level, onOpen }: { title: string; level: number; 
   );
 }
 
-function Shell() {
+function Shell({ account }: { account: AccountActions }) {
   const route = useRoute();
   const { content, progress, progressLoaded, error, recovered, recoveredTo, reloadContent, saver } = useAppData();
+  const { on: listenOn } = useListen();
   /** Locked lessons the learner chose to open anyway, for this visit. */
   const [peeked, setPeeked] = useState<string[]>([]);
   const [recent, setRecent] = useState<NonNullable<TutorContext["recent"]>>([]);
@@ -130,14 +135,51 @@ function Shell() {
             </nav>
             <SavingPill saving={saver.status === "saving"} />
           </div>
-          <ListenToggle />
+          <div className="flex shrink-0 items-center gap-2">
+            <ListenToggle />
+            <ProfileControl {...account} />
+          </div>
         </header>
         <main className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain" id="main-scroll">
           {saver.status === "failed" && <UnsavedBanner count={saver.unsaved} lesson={saver.pending} error={saver.error} onRetry={() => void saver.retry()} />}
           {error && content && <p className="mx-4 mt-4 rounded-lg border border-bad bg-bad-soft px-4 py-2 text-fg sm:mx-5">{error}</p>}
-          {recovered && <p className="mx-4 mt-4 rounded-lg border border-warn bg-warn-soft px-4 py-2 text-fg sm:mx-5">Your saved progress file could not be read. It has been set aside {recoveredTo ? <>as <code className="font-mono text-sm break-all">{recoveredTo}</code></> : "in data/profiles/default/"} and progress starts fresh.</p>}
+          {recovered && (
+            <p className="mx-4 mt-4 rounded-lg border border-warn bg-warn-soft px-4 py-2 text-fg sm:mx-5">
+              {account.learner.name}'s saved progress was damaged. {Object.keys(progress.concepts).length || Object.keys(progress.lessons).length ? "What could be read was kept and the rest starts fresh" : "Nothing in it could be read, so progress starts fresh"}; the original is kept in the database as backup {recoveredTo ? <code className="font-mono text-sm break-all">{recoveredTo}</code> : "in progress_backups"} (docs/DATA.md says how to look at it).
+            </p>
+          )}
+          {account.lostAnswers && (
+            <div role="alert" className="mx-4 mt-4 flex flex-wrap items-center gap-x-3 rounded-lg border border-bad bg-bad-soft px-4 py-2 text-fg sm:mx-5" data-testid="lost-answers">
+              <p className="min-w-0 flex-1">
+                {account.lostAnswers.answers === 1 ? "1 answer was" : account.lostAnswers.answers > 1 ? `${account.lostAnswers.answers} answers were` : "A finished lesson was"} not saved
+                {account.lostAnswers.answers > 0 && account.lostAnswers.lesson ? " (nor the lesson they finished)" : ""}: the learner changed or the login ended (perhaps in another tab) before the server had them.
+              </p>
+              <Button size="sm" variant="ghost" onClick={account.onDismissLostAnswers}>
+                Dismiss
+              </Button>
+            </div>
+          )}
+          {account.imported && (
+            <div role="status" className="mx-4 mt-4 rounded-lg border border-warn bg-warn-soft px-4 py-2 text-fg sm:mx-5" data-testid="import-report">
+              <p className="font-semibold">Some of what this copy of Fret Not had saved before logins could not be brought in:</p>
+              <ul className="mt-1 list-disc pl-5">
+                {account.imported.problems.map((p) => (
+                  <li key={p}>{p}</li>
+                ))}
+              </ul>
+              {account.imported.backupId && (
+                <p className="mt-1 text-sm text-fg-2">
+                  The damaged progress is kept as backup <code className="font-mono break-all">{account.imported.backupId}</code> (docs/DATA.md says how to look at it). The files under data/ are untouched.
+                </p>
+              )}
+              <Button size="sm" variant="ghost" className="mt-1" onClick={account.onDismissImported}>
+                Dismiss
+              </Button>
+            </div>
+          )}
           <ErrorBoundary key={`${route.name}/${route.arg ?? ""}`} label="page">{page}</ErrorBoundary>
         </main>
+        {listenOn && <ListenTransport />}
         <nav className="z-10 flex shrink-0 border-t border-line bg-panel pb-[env(safe-area-inset-bottom)] sm:hidden" aria-label="Sections">
           {tabs.map((t) => tabLink(t, true))}
         </nav>
@@ -147,11 +189,13 @@ function Shell() {
   );
 }
 
-export default function App() {
+/** The app as one learner (the auth gate, src/account/AuthGate.tsx, keys
+ *  it by learner, so a switch starts it afresh). */
+export default function App({ account }: { account: AccountActions }) {
   return (
-    <AppDataProvider>
-      <ListenProvider>
-        <Shell />
+    <AppDataProvider learnerId={account.learner.id}>
+      <ListenProvider learnerId={account.learner.id}>
+        <Shell account={account} />
       </ListenProvider>
     </AppDataProvider>
   );
