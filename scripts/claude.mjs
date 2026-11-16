@@ -188,8 +188,8 @@ export function buildArgs({ systemPrompt, model = DEFAULT_MODEL, maxTurns = 25, 
   // "read" is a turn that may look but not write: Edit and Write are not
   // among its tools, so there is nothing to grant or scope.
   // "none" is a turn with no file access at all: `--tools ""` removes every
-  // built-in tool and nothing is granted. Unused today; kept so a future
-  // tool-less turn (a quick spoken hint, say) inherits the same sandbox.
+  // built-in tool and nothing is granted. A non-admin's turn uses it when no
+  // clean copy of HEAD could be made for it to read (web/server/chat.ts).
   const toolArgs = tools === "none"
     ? ["--tools", ""]
     : tools === "read"
