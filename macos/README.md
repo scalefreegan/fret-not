@@ -14,7 +14,8 @@ open -a Fret Not
 ## Anatomy
 
 - **`Fret Not.applescript`** — the Dock face. Stay-open applet: `run`/`reopen`
-  start the server (if down) and open http://localhost:38600; `idle` quits
+  start the server (if down), then focus the Chrome tab already on
+  http://localhost:38600 or open one (see Chrome tab reuse); `idle` quits
   the Dock icon after **three consecutive** failed health checks (one miss is
   normal — editing any server file restarts Vite, unbinding the port for a
   moment); `quit` pkills vite **only if this app started it** — a server it
@@ -105,3 +106,15 @@ need it gone.
 
 The bundle id is personal (`com.scalefreegan.fretnot`) and signing is ad hoc.
 This is a personal launcher, not a distributable app.
+
+## Chrome tab reuse
+
+Clicking the icon while Fret Not is already open brings back the Chrome tab
+you were using (any tab whose URL starts with the app's localhost URL)
+instead of opening a new one; with no such tab it opens one. This needs
+Automation access to Google Chrome: the first click after a build asks for
+it. If clicks keep opening new tabs, look in `~/Library/Logs/FretNot.log`
+for a `[launcher] Chrome tab focus failed` line; `-1743` means the access
+was refused — enable it under System Settings → Privacy & Security →
+Automation, or `tccutil reset AppleEvents <bundle id>` and click again.
+An ad-hoc rebuild changes the app's code identity, so macOS may ask again.
